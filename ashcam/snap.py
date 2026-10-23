@@ -11,6 +11,7 @@ DECAY_BLOCKS = 2          # ...for this many blocks in a row
 MAX_LOUD_BLOCKS = 4       # longer than this is a sound, not a snap
 REFRACTORY_S = 0.5
 DOUBLE_GAP = (0.12, 0.6)
+MIN_PEAK = 0.035          # band-passed peak a snap must reach at sensitivity 0.5
 
 
 class SnapDetector:
@@ -71,10 +72,13 @@ class SnapDetector:
             score = self._score(hf)
             self.level = score
             threshold = 0.8 - 0.6 * self.sensitivity
+            # Loud enough in absolute terms too: in a silent room a faint
+            # keyboard click has a big ratio but is nowhere near a snap.
+            min_peak = MIN_PEAK * (1.5 - self.sensitivity)
             fired = False
 
             if self._peak == 0.0:
-                if score > threshold:
+                if score > threshold and hf >= min_peak:
                     self._peak, self._loud, self._quiet = hf, 1, 0
             elif hf > self._peak:
                 self._peak, self._loud, self._quiet = hf, self._loud + 1, 0

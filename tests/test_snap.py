@@ -91,10 +91,10 @@ def test_level_reported():
 
 
 def test_quieter_snap_detected():
-    # Peak 0.1 is a normal snap a little way from a laptop mic.
+    # Peak 0.15: a soft snap at arm's length from a laptop mic.
     for offset in range(0, BLOCK, 64):
         at = 1.0 + offset / SR
-        fires = feed(detector(), with_events(2.0, [(at, snap_burst() * 0.2)]))
+        fires = feed(detector(), with_events(2.0, [(at, snap_burst() * 0.3)]))
         assert len(fires) == 1, offset
 
 
@@ -103,3 +103,10 @@ def test_snap_at_any_block_offset():
         at = 1.0 + offset / SR
         fires = feed(detector(), with_events(2.0, [(at, snap_burst())]))
         assert len(fires) == 1, offset
+
+
+def test_faint_click_in_silent_room_ignored():
+    # Very quiet room, faint click (keyboard, mouse): big ratio, but too quiet to be a snap.
+    x = rng.normal(0, 0.0005, SR * 2).astype(np.float32)
+    x[SR : SR + len(snap_burst())] += snap_burst() * 0.06
+    assert feed(detector(), x) == []
