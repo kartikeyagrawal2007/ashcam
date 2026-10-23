@@ -88,20 +88,25 @@ class DustEffect:
             fade = (1 - a / self.life_s)[:, 0]
             ashen = np.minimum(1.0, a * 1.5 / self.life_s)
             col = self._colour[live] * (1 - ashen) + ASH_BGR * ashen
-            acc = np.zeros((h, w, 3), np.float32)
-            alpha = np.zeros((h, w), np.float32)
             px = np.round(pos).astype(np.int32)
             # Fresh specks are 2x2, older ones shrink to a single pixel.
             big = fade > 0.5
+            xs, ys, fs, cs = [], [], [], []
             for dx, dy, sel in ((0, 0, slice(None)), (1, 0, big), (0, 1, big), (1, 1, big)):
-                x = px[sel, 0] + dx
-                y = px[sel, 1] + dy
-                ok = (x >= 0) & (x < w) & (y >= 0) & (y < h)
-                f = fade[sel][ok]
-                np.add.at(alpha, (y[ok], x[ok]), f)
-                np.add.at(acc, (y[ok], x[ok]), col[sel][ok] * f[:, None])
-            hit = alpha > 0
-            a_px = np.minimum(1.0, alpha[hit])[:, None]
-            out[hit] = out[hit] * (1 - a_px) + (acc[hit] / alpha[hit][:, None]) * a_px
+                xs.append(px[sel, 0] + dx)
+                ys.append(px[sel, 1] + dy)
+                fs.append(fade[sel])
+                cs.append(col[sel])
+            x, y = np.concatenate(xs), np.concatenate(ys)
+            f, c = np.concatenate(fs), np.concatenate(cs)
+            ok = (x >= 0) & (x < w) & (y >= 0) & (y < h)
+            idx, f, c = y[ok] * w + x[ok], f[ok], c[ok]
+            # Splat by flat pixel index; bincount is much faster than add.at.
+            hit, inv = np.unique(idx, return_inverse=True)
+            alpha = np.bincount(inv, f)
+            acc = np.stack([np.bincount(inv, c[:, k] * f) for k in range(3)], 1)
+            flat = out.reshape(-1, 3)
+            a_px = np.minimum(1.0, alpha)[:, None]
+            flat[hit] = flat[hit] * (1 - a_px) + (acc / alpha[:, None]) * a_px
 
         return np.clip(out, 0, 255).astype(np.uint8)

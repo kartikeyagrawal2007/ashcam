@@ -3,7 +3,8 @@
 import cv2
 import numpy as np
 
-_HALO = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17))
+# Square kernel: OpenCV dilates rectangles far faster than ellipses.
+_HALO = cv2.getStructuringElement(cv2.MORPH_RECT, (17, 17))
 
 
 class BackgroundPlate:
@@ -16,7 +17,7 @@ class BackgroundPlate:
     def update(self, frame: np.ndarray, mask: np.ndarray) -> None:
         person = cv2.dilate((mask > 0.2).astype(np.uint8), _HALO) > 0
         seen = ~person
-        self.plate[seen] = frame[seen]
+        np.copyto(self.plate, frame, where=seen[..., None])
         self.known |= seen
 
     def _inpaint_guess(self) -> np.ndarray:
