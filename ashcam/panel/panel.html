@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AshCam</title>
+<style>
+  :root {
+    --bg: #15171C;
+    --surface: #1D2027;
+    --raised: #262A33;
+    --line: #323743;
+    --text: #E9E7E2;
+    --muted: #9A9EA8;
+    --faint: #6B707B;
+    --gold: #E3B54F;
+    --gold-ink: #2A2110;
+    --blue: #7FA7E8;
+    --danger: #E8705F;
+    --r-sm: 6px;
+    --r-md: 10px;
+    --r-lg: 16px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 16px;
+    min-height: 100vh;
+  }
+  ::selection { background: var(--gold); color: var(--gold-ink); }
+
+  .app { max-width: 1040px; margin: 0 auto; display: grid; gap: 16px; }
+  @media (min-width: 760px) {
+    .app { grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); align-items: start; }
+    .controls { position: sticky; top: 16px; }
+  }
+
+  /* Preview */
+  .preview {
+    position: relative; margin: 0;
+    aspect-ratio: 16 / 9; border-radius: var(--r-lg); overflow: hidden;
+    background: var(--surface); border: 1px solid var(--line);
+  }
+  .preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .preview .empty[hidden] { display: none; }
+  .preview .empty {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    color: var(--faint); font-size: 13px; padding: 24px; text-align: center;
+  }
+  .pill {
+    position: absolute; top: 12px; left: 12px;
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 4px 12px 4px 8px; border-radius: 999px;
+    background: rgba(21, 23, 28, 0.78); backdrop-filter: blur(8px);
+    font-size: 12px; font-weight: 600; color: var(--text);
+  }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: #5FD08A; }
+  .pill[data-tone="gold"] .dot { background: var(--gold); }
+  .pill[data-tone="ash"] .dot { background: var(--muted); }
+  .pill[data-tone="blue"] .dot { background: var(--blue); }
+  .caption { margin: 8px 4px 0; color: var(--muted); font-size: 12px; }
+
+  /* Alert */
+  .alert {
+    display: none; gap: 12px; align-items: flex-start;
+    padding: 12px 16px; border-radius: var(--r-md);
+    background: rgba(232, 112, 95, 0.1); border: 1px solid rgba(232, 112, 95, 0.4);
+    color: #F3C2BA; font-size: 13px;
+  }
+  .alert.show { display: flex; }
+  .alert svg { flex: none; margin-top: 2px; color: var(--danger); }
+
+  /* Controls */
+  .controls { display: grid; gap: 12px; }
+  .toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .toggle {
+    appearance: none; font: inherit; color: var(--text); cursor: pointer;
+    display: grid; gap: 4px; justify-items: start; text-align: left;
+    min-height: 88px; padding: 12px 16px;
+    border-radius: var(--r-md); border: 1px solid var(--line); background: var(--surface);
+    transition: background-color 150ms ease-out, border-color 150ms ease-out, transform 120ms ease-out;
+  }
+  .toggle:hover { background: var(--raised); }
+  .toggle:active { transform: scale(0.98); }
+  .toggle:focus-visible, .btn:focus-visible, input:focus-visible + .track, input[type=range]:focus-visible {
+    outline: 2px solid var(--gold); outline-offset: 2px;
+  }
+  .toggle svg { width: 20px; height: 20px; }
+  .toggle .label { font-size: 15px; font-weight: 600; }
+  .toggle kbd { font: 12px/1 -apple-system, system-ui; color: var(--faint); }
+  .toggle.vanish { background: var(--gold); border-color: var(--gold); color: var(--gold-ink); }
+  .toggle.vanish:hover { background: #EBC266; }
+  .toggle.vanish kbd { color: rgba(42, 33, 16, 0.65); }
+  .toggle.vanish[aria-pressed="true"] { background: var(--surface); border-color: var(--gold); color: var(--gold); }
+  .toggle.vanish[aria-pressed="true"] kbd { color: var(--faint); }
+  .toggle.away[aria-pressed="true"] { border-color: var(--blue); color: var(--blue); }
+  .toggle:disabled { cursor: progress; opacity: 0.6; transform: none; }
+
+  .section {
+    padding: 16px; border-radius: var(--r-md);
+    background: var(--surface); border: 1px solid var(--line);
+    display: grid; gap: 12px;
+  }
+  .section h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+  .hint { margin: 0; color: var(--muted); font-size: 13px; text-wrap: pretty; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+
+  .btn {
+    appearance: none; font: inherit; font-weight: 600; font-size: 13px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+    min-height: 36px; padding: 0 12px; border-radius: var(--r-sm);
+    color: var(--text); background: var(--raised); border: 1px solid var(--line);
+    transition: background-color 150ms ease-out;
+  }
+  .btn:hover { background: #2E333D; }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+  .btn .rec { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+
+  .progress { height: 4px; border-radius: 999px; background: var(--raised); overflow: hidden; display: none; }
+  .progress.show { display: block; }
+  .progress > span { display: block; height: 100%; width: 0; background: var(--blue); transition: width 200ms linear; }
+
+  /* Snap meter: the one loud thing */
+  .meter { position: relative; height: 12px; border-radius: 999px; background: var(--raised); overflow: visible; }
+  .meter .fill {
+    position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 999px;
+    background: var(--muted); transition: width 80ms linear, background-color 120ms ease-out;
+  }
+  .meter .fill.hot { background: var(--gold); }
+  .meter .mark {
+    position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px;
+    background: var(--gold); border-radius: 1px; transition: left 120ms ease-out;
+  }
+  .meter-legend { display: flex; justify-content: space-between; color: var(--faint); font-size: 12px; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  label.field { display: grid; gap: 8px; font-size: 13px; color: var(--text); }
+  input[type=range] { width: 100%; accent-color: var(--text); margin: 0; min-height: 24px; }
+
+  .switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; }
+  .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .switch .track {
+    flex: none; width: 36px; height: 20px; border-radius: 999px; background: var(--raised);
+    border: 1px solid var(--line); position: relative; transition: background-color 150ms ease-out;
+  }
+  .switch .track::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--muted); transition: transform 150ms ease-out, background-color 150ms ease-out;
+  }
+  .switch input:checked + .track { background: rgba(227, 181, 79, 0.25); border-color: var(--gold); }
+  .switch input:checked + .track::after { transform: translateX(16px); background: var(--gold); }
+  .switch .text { display: grid; gap: 2px; }
+  .switch .text small { color: var(--muted); font-size: 12px; }
+
+  .off .meter, .off label.field, .off .switch { opacity: 0.4; pointer-events: none; }
+
+  footer { color: var(--muted); font-size: 12px; padding: 0 4px; }
+  footer strong { color: var(--text); font-weight: 600; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<main class="app">
+  <div>
+    <figure class="preview" aria-label="What your call sees">
+      <img id="frame" alt="" hidden>
+      <div class="empty" id="empty">Waiting for the camera…</div>
+      <span class="pill" id="pill" data-tone="green" role="status"><span class="dot"></span><span id="pillText">You’re visible</span></span>
+    </figure>
+    <p class="caption">This is what your call sees.</p>
+  </div>
+
+  <div class="controls">
+    <div class="alert" id="alert" role="alert">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+      <span id="alertText"></span>
+    </div>
+
+    <div class="toggles">
+      <button class="toggle vanish" id="vanish" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.8 19.6A2 2 0 1 0 14 16H2"/><path d="M17.5 8a2.5 2.5 0 1 1 2 4H2"/><path d="M9.8 4.4A2 2 0 1 1 11 8H2"/></svg>
+        <span class="label" id="vanishLabel">Vanish</span>
+        <kbd>Snap or ⌥⇧V</kbd>
+      </button>
+      <button class="toggle away" id="away" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 2v2"/><path d="M14 2v2"/><path d="M16 8a1 1 0 0 1 1 1v8a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1h14a4 4 0 1 1 0 8h-1"/><path d="M6 2v2"/></svg>
+        <span class="label" id="awayLabel">Go away</span>
+        <kbd>⌥⇧A</kbd>
+      </button>
+    </div>
+
+    <section class="section" aria-labelledby="clipTitle">
+      <div class="row">
+        <h2 id="clipTitle">Go away clip</h2>
+        <button class="btn" id="record"><span class="rec" aria-hidden="true"></span><span id="recordLabel">Record 15 s</span></button>
+      </div>
+      <p class="hint" id="clipHint">No clip yet. Until you record one, go away replays your last 5 seconds.</p>
+      <div class="progress" id="progress"><span id="progressBar"></span></div>
+    </section>
+
+    <section class="section" id="snapSection" aria-labelledby="snapTitle">
+      <h2 id="snapTitle">Snap</h2>
+      <p class="hint" id="snapHint">Snap and watch the bar. It vanishes you when it crosses the gold mark.</p>
+      <div>
+        <div class="meter" aria-hidden="true"><span class="fill" id="fill"></span><span class="mark" id="mark"></span></div>
+      </div>
+      <label class="field">
+        <span class="row"><span>Sensitivity</span><span class="num" id="sensValue">50</span></span>
+        <input type="range" id="sens" min="0" max="100" step="1" value="50">
+      </label>
+      <label class="switch">
+        <span class="text">Require a double snap<small>Fewer accidental triggers from claps and keyboard taps.</small></span>
+        <input type="checkbox" id="double" role="switch">
+        <span class="track" aria-hidden="true"></span>
+      </label>
+    </section>
+
+    <footer>In WhatsApp, FaceTime or Meet, choose <strong>OBS Virtual Camera</strong> as your camera.</footer>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+const PILL = {
+  present:   ["You’re visible", "green"],
+  vanishing: ["Turning to dust", "gold"],
+  vanished:  ["You’re gone", "ash"],
+  returning: ["Coming back", "gold"],
+};
+
+// Lets the panel be opened in a plain browser to check the design.
+function demoApi() {
+  let state = "present", away = false, t0 = 0, rec = null, level = 0;
+  const canvas = document.createElement("canvas");
+  canvas.width = 640; canvas.height = 360;
+  const ctx = canvas.getContext("2d");
+  return {
+    async frame() {
+      const g = ctx.createLinearGradient(0, 0, 640, 360);
+      g.addColorStop(0, "#3a4250"); g.addColorStop(1, "#1f242c");
+      ctx.fillStyle = g; ctx.fillRect(0, 0, 640, 360);
+      if (state !== "vanished" && !away) {
+        ctx.fillStyle = "#c9a68a";
+        ctx.beginPath(); ctx.ellipse(320, 160, 52, 64, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "#4b5a73";
+        ctx.beginPath(); ctx.ellipse(320, 360, 140, 130, 0, Math.PI, 0); ctx.fill();
+      }
+      return canvas.toDataURL("image/jpeg").split(",")[1];
+    },
+    async status() {
+      const now = performance.now() / 1000;
+      if ((state === "vanishing" || state === "returning") && now - t0 > 2.5)
+        state = state === "vanishing" ? "vanished" : "present";
+      level = Math.max(0, level * 0.8 + (Math.random() < 0.03 ? 0.7 : Math.random() * 0.08));
+      let away_rec = "idle", left = 0;
+      if (rec) {
+        const e = now - rec;
+        if (e < 3) { away_rec = "countdown"; left = 3 - e; }
+        else if (e < 18) { away_rec = "recording"; left = 18 - e; }
+        else { rec = null; this._clip = true; }
+      }
+      return { state, away, away_rec, away_rec_left: left, has_clip: !!this._clip,
+               snap_level: level, vcam_ok: true, error: null, snap_on: true,
+               sensitivity: this._s ?? 0.5, double: !!this._d, threshold: 0.8 - 0.6 * (this._s ?? 0.5) };
+    },
+    async vanish() {
+      if (state === "present") { state = "vanishing"; t0 = performance.now() / 1000; }
+      else if (state === "vanished") { state = "returning"; t0 = performance.now() / 1000; }
+    },
+    async away() { away = !away; },
+    async record() { rec = performance.now() / 1000; },
+    async set_sensitivity(v) { this._s = v; },
+    async set_double(v) { this._d = v; },
+  };
+}
+
+let api = null;
+let settingsLoaded = false;
+
+function render(s) {
+  const [text, tone] = s.away ? ["Go away loop playing", "blue"] : PILL[s.state];
+  $("pillText").textContent = text;
+  $("pill").dataset.tone = tone;
+
+  const gone = s.state === "vanished";
+  const busy = s.state === "vanishing" || s.state === "returning";
+  $("vanish").setAttribute("aria-pressed", String(gone || s.state === "vanishing"));
+  $("vanish").disabled = busy || s.away;
+  $("vanishLabel").textContent = busy ? PILL[s.state][0] + "…" : gone ? "Come back" : "Vanish";
+  $("away").setAttribute("aria-pressed", String(s.away));
+  $("awayLabel").textContent = s.away ? "I’m back" : "Go away";
+
+  const recording = s.away_rec !== "idle";
+  $("record").disabled = recording || s.away;
+  $("recordLabel").textContent = s.has_clip ? "Record again" : "Record 15 s";
+  $("progress").classList.toggle("show", s.away_rec === "recording");
+  if (s.away_rec === "countdown") {
+    $("clipHint").textContent = `Sit as you normally would. Recording starts in ${Math.ceil(s.away_rec_left)}.`;
+  } else if (s.away_rec === "recording") {
+    $("clipHint").textContent = `Recording. Sit still and look at the screen, ${Math.ceil(s.away_rec_left)} s left.`;
+    $("progressBar").style.width = `${(1 - s.away_rec_left / 15) * 100}%`;
+  } else {
+    $("clipHint").textContent = s.has_clip
+      ? "Clip ready. Go away plays it forward and back, so there’s no jump."
+      : "No clip yet. Until you record one, go away replays your last 5 seconds.";
+  }
+
+  $("snapSection").classList.toggle("off", !s.snap_on);
+  if (!s.snap_on) {
+    $("snapHint").textContent = "Snapping is off because the microphone isn’t available. ⌥⇧V still works.";
+  }
+  $("fill").style.width = `${Math.min(1, s.snap_level) * 100}%`;
+  $("fill").classList.toggle("hot", s.snap_level >= s.threshold);
+  $("mark").style.left = `${s.threshold * 100}%`;
+  if (!settingsLoaded) {
+    settingsLoaded = true;
+    $("sens").value = Math.round(s.sensitivity * 100);
+    $("sensValue").textContent = $("sens").value;
+    $("double").checked = s.double;
+  }
+
+  $("alert").classList.toggle("show", !!s.error);
+  $("alertText").textContent = s.error || "";
+}
+
+async function pollStatus() {
+  try { render(await api.status()); } catch (e) { console.error(e); }
+  setTimeout(pollStatus, 150);
+}
+
+async function pollFrame() {
+  try {
+    const b64 = await api.frame();
+    if (b64) {
+      $("frame").src = "data:image/jpeg;base64," + b64;
+      $("frame").hidden = false;
+      $("empty").hidden = true;
+    }
+  } catch (e) { console.error(e); }
+  setTimeout(pollFrame, 100);
+}
+
+function start(a) {
+  api = a;
+  $("vanish").onclick = () => api.vanish();
+  $("away").onclick = () => api.away();
+  $("record").onclick = () => api.record();
+  $("sens").oninput = (e) => {
+    $("sensValue").textContent = e.target.value;
+    api.set_sensitivity(e.target.value / 100);
+  };
+  $("double").onchange = (e) => api.set_double(e.target.checked);
+  pollStatus();
+  pollFrame();
+}
+
+if (new URLSearchParams(location.search).has("demo")) start(demoApi());
+else if (window.pywebview && window.pywebview.api) start(window.pywebview.api);
+else window.addEventListener("pywebviewready", () => start(window.pywebview.api));
+</script>
+</body>
+</html>

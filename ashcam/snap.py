@@ -37,6 +37,11 @@ class SnapDetector:
         self._stream = None
         self._lock = threading.Lock()
 
+    @property
+    def threshold(self) -> float:
+        """Score a snap must beat; the panel draws it on the level meter."""
+        return 0.8 - 0.6 * self.sensitivity
+
     def _band_peak(self, block: np.ndarray) -> float:
         """Peak of the band-passed signal over the middle of a 2-block window.
 
@@ -71,7 +76,7 @@ class SnapDetector:
                 return False
             score = self._score(hf)
             self.level = score
-            threshold = 0.8 - 0.6 * self.sensitivity
+            threshold = self.threshold
             # Loud enough in absolute terms too: in a silent room a faint
             # keyboard click has a big ratio but is nowhere near a snap.
             min_peak = MIN_PEAK * (1.5 - self.sensitivity)
