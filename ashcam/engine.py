@@ -2,6 +2,7 @@
 
 import threading
 import time
+from collections import deque
 from typing import Callable
 
 import cv2
@@ -15,6 +16,9 @@ from .state import State, StateMachine
 OUT_SIZE = (1280, 720)
 XFADE_S = 0.2
 _GROW = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))  # at 1/4 res: ~9 px each side
+_HIDE_GROW = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))  # at 1/4 res: ~18 px
+MASK_MEMORY = 8          # frames of person outline kept when hiding
+ROOM_CLEAR_FRAMES = 5    # frames with nobody in view before the room is saved
 
 VCAM_HELP = ("OBS Virtual Camera isn't available. Open OBS, click Start Virtual Camera, "
              "then Stop, and quit OBS. If it still fails, turn it on in System Settings → "
@@ -63,6 +67,11 @@ class Engine:
         # Off: the call gets the true image (text behind you reads correctly).
         self.flip_output = False
         self._composed: np.ndarray | None = None   # last output before any flip
+        self._mask_hist: deque[np.ndarray] = deque(maxlen=MASK_MEMORY)
+        self.room = "idle"            # idle | countdown | waiting
+        self.room_saved = False
+        self._room_at = 0.0
+        self._room_clear = 0
         # Kept apart so one recovering can't hide another that hasn't.
         self.loop_error: str | None = None
         self.camera_error: str | None = None
@@ -87,6 +96,11 @@ class Engine:
         with self._lock:
             self._pending.append("away")
 
+    def capture_room(self, countdown_s: float = 5.0) -> None:
+        """Count down, wait until nobody is in view, then save the whole room."""
+        with self._lock:
+            self._pending.append(("room", countdown_s))
+
     @property
     def error(self) -> str | None:
         mic = getattr(self.snap, "mic_error", None) if self.snap else None
@@ -102,6 +116,9 @@ class Engine:
             "has_clip": self.away.has_clip,
             "snap_level": float(self.snap.level) if self.snap else 0.0,
             "vcam_ok": self.vcam_ok,
+            "room": self.room,
+            "room_left": round(max(0.0, self._room_at - time.monotonic()), 1),
+            "room_saved": self.room_saved,
             "error": self.error,
         }
 
@@ -109,7 +126,9 @@ class Engine:
         with self._lock:
             pending, self._pending = self._pending, []
         for action in pending:
-            if action == "away":
+            if isinstance(action, tuple) and action[0] == "room":
+                self.room, self._room_at, self._room_clear = "countdown", now + action[1], 0
+            elif action == "away":
                 self.sm.toggle_away()
                 self.away.reset_playhead()
                 if self.sm.away:
@@ -159,7 +178,9 @@ class Engine:
         self.away.push(frame, now)
         if self._plate is None or self._plate.plate.shape != frame.shape:
             self._plate = BackgroundPlate(frame.shape)
+        self._update_room_capture(frame, mask, now)
         self._plate.update(frame, mask)
+        self._mask_hist.append(self._small(mask))
 
         if state is State.PRESENT:
             out = frame
@@ -172,10 +193,10 @@ class Engine:
                 else:
                     out = cv2.addWeighted(self._xfade_from, 1 - k, frame, k, 0)
         elif state is State.VANISHED:
-            out = composite(frame, self._plate.filled(), feather(mask))
+            out = composite(frame, self._plate.matched(frame, mask), self._hide_mask())
         else:
-            hide = feather(np.maximum(self._fx_mask, mask))
-            base = composite(frame, self._plate.filled(), hide)
+            hide = self._hide_mask(extra=self._fx_mask)
+            base = composite(frame, self._plate.matched(frame, mask), hide)
             t = now - self.sm.started_at
             if state is State.RETURNING:
                 out = self._fx.render_assemble(base, t)
@@ -183,6 +204,34 @@ class Engine:
                 out = self._fx.render(base, t)
 
         return out
+
+    @staticmethod
+    def _small(mask: np.ndarray) -> np.ndarray:
+        h, w = mask.shape
+        return cv2.resize(mask, (max(1, w // 4), max(1, h // 4)), interpolation=cv2.INTER_AREA)
+
+    def _hide_mask(self, extra: np.ndarray | None = None) -> np.ndarray:
+        """Where to show the room instead of the camera.
+
+        The union of the last few frames' outlines, grown and softened, so a
+        hand or shoulder the detector misses for a frame never flickers through.
+        """
+        small = np.max(np.stack(self._mask_hist), axis=0)
+        if extra is not None:
+            small = np.maximum(small, self._small(extra))
+        small = cv2.GaussianBlur(cv2.dilate(small, _HIDE_GROW), (9, 9), 0)
+        h, w = self._plate.known.shape
+        return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+
+    def _update_room_capture(self, frame: np.ndarray, mask: np.ndarray, now: float) -> None:
+        if self.room == "countdown" and now >= self._room_at:
+            self.room = "waiting"
+        if self.room != "waiting":
+            return
+        self._room_clear = self._room_clear + 1 if mask.max() < 0.5 else 0
+        if self._room_clear >= ROOM_CLEAR_FRAMES:
+            self._plate.capture(frame)
+            self.room, self.room_saved = "idle", True
 
     def start(self) -> None:
         self._running = True

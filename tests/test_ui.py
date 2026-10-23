@@ -88,3 +88,12 @@ def test_flip_switch():
     assert api.status()["flip"] is False
     api.set_flip(True)
     assert engine.flip_output is True and api.status()["flip"] is True
+
+
+def test_capture_room_button():
+    api, engine, _, _ = make()
+    engine.process(np.zeros((720, 1280, 3), np.uint8), 0.0)
+    assert api.status()["room_saved"] is False
+    api.capture_room()
+    engine.process(np.zeros((720, 1280, 3), np.uint8), 0.1)
+    assert api.status()["room"] == "countdown"

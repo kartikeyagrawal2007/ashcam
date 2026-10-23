@@ -9,10 +9,12 @@ import numpy as np
 from mediapipe.tasks.python import BaseOptions
 from mediapipe.tasks.python import vision
 
+# The landscape model is trained on 16:9 frames like a webcam's; the square
+# one squashes them and gets sloppier edges (arms, hair, shoulders).
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/image_segmenter/"
-             "selfie_segmenter/float16/latest/selfie_segmenter.tflite")
+             "selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite")
 DEFAULT_MODEL = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models",
-                             "selfie_segmenter.tflite")
+                             "selfie_segmenter_landscape.tflite")
 
 
 def ensure_model(path: str = DEFAULT_MODEL) -> str:

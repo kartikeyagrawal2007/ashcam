@@ -195,6 +195,14 @@
       </button>
     </div>
 
+    <section class="section" aria-labelledby="roomTitle">
+      <div class="row">
+        <h2 id="roomTitle">Empty room</h2>
+        <button class="btn" id="room"><span id="roomLabel">Capture room</span></button>
+      </div>
+      <p class="hint" id="roomHint">For a clean vanish, let AshCam see the room without you once. Click Capture room, then step out of view.</p>
+    </section>
+
     <section class="section" aria-labelledby="clipTitle">
       <div class="row">
         <h2 id="clipTitle">Go away clip</h2>
@@ -277,7 +285,16 @@ function demoApi() {
       }
       return { state, away, away_rec, away_rec_left: left, has_clip: !!this._clip,
                snap_level: level, vcam_ok: true, error: null, snap_on: true,
-               sensitivity: this._s ?? 0.5, double: !!this._d, flip: !!this._f, threshold: 0.8 - 0.6 * (this._s ?? 0.5) };
+               sensitivity: this._s ?? 0.5, double: !!this._d, flip: !!this._f,
+               ...this._roomStatus(now), threshold: 0.8 - 0.6 * (this._s ?? 0.5) };
+    },
+    _roomStatus(now) {
+      if (!this._room) return { room: "idle", room_left: 0, room_saved: !!this._saved };
+      const e = now - this._room;
+      if (e < 5) return { room: "countdown", room_left: 5 - e, room_saved: !!this._saved };
+      if (e < 7) return { room: "waiting", room_left: 0, room_saved: !!this._saved };
+      this._room = null; this._saved = true;
+      return { room: "idle", room_left: 0, room_saved: true };
     },
     async vanish() {
       if (state === "present") { state = "vanishing"; t0 = performance.now() / 1000; }
@@ -285,6 +302,7 @@ function demoApi() {
     },
     async away() { away = !away; },
     async record() { rec = performance.now() / 1000; },
+    async capture_room() { this._room = performance.now() / 1000; },
     async set_sensitivity(v) { this._s = v; },
     async set_double(v) { this._d = v; },
     async set_flip(v) { this._f = v; },
@@ -320,6 +338,18 @@ function render(s) {
     $("clipHint").textContent = s.has_clip
       ? "Clip ready. Go away plays it forward and back, so there’s no jump."
       : "No clip yet. Until you record one, go away replays your last 5 seconds.";
+  }
+
+  $("room").disabled = s.room !== "idle";
+  $("roomLabel").textContent = s.room_saved ? "Capture again" : "Capture room";
+  if (s.room === "countdown") {
+    $("roomHint").textContent = `Step out of the camera’s view. Capturing in ${Math.ceil(s.room_left)}.`;
+  } else if (s.room === "waiting") {
+    $("roomHint").textContent = "Still seeing you. Step fully out of view, then wait a moment.";
+  } else {
+    $("roomHint").textContent = s.room_saved
+      ? "Room saved. Capture again if you move the camera or the lighting changes a lot."
+      : "For a clean vanish, let AshCam see the room without you once. Click Capture room, then step out of view.";
   }
 
   $("snapSection").classList.toggle("off", !s.snap_on);
@@ -363,6 +393,7 @@ function start(a) {
   $("vanish").onclick = () => api.vanish();
   $("away").onclick = () => api.away();
   $("record").onclick = () => api.record();
+  $("room").onclick = () => api.capture_room();
   $("sens").oninput = (e) => {
     $("sensValue").textContent = e.target.value;
     api.set_sensitivity(e.target.value / 100);

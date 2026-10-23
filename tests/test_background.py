@@ -65,3 +65,45 @@ def test_brief_dropout_not_learned():
     for _ in range(2):
         plate.update(person, np.zeros((H, W), np.float32))
     assert not plate.known[:, :10].any()
+
+
+def learnt_plate(wall=200):
+    plate = BackgroundPlate((H, W, 3))
+    for _ in range(3):
+        plate.update(np.full((H, W, 3), wall, np.uint8), left_half_mask())
+    return plate
+
+
+def test_matched_follows_exposure_change():
+    # Camera got darker after the room was learnt: remembered room must darken too.
+    plate = learnt_plate(200)
+    live = np.full((H, W, 3), 150, np.uint8)
+    out = plate.matched(live, left_half_mask()).astype(np.float32)
+    assert abs(out[:, -20:].mean() - 150) <= 6      # seen area
+    assert abs(out[:, :20].mean() - 150) <= 10      # guessed area
+
+
+def test_matched_follows_colour_shift():
+    plate = learnt_plate(200)
+    live = np.zeros((H, W, 3), np.uint8)
+    live[:] = (150, 200, 230)
+    out = plate.matched(live, left_half_mask()).astype(np.float32)
+    for ch, want in enumerate((150, 200, 230)):
+        assert abs(out[:, :20, ch].mean() - want) <= 12
+
+
+def test_capture_learns_whole_room():
+    plate = BackgroundPlate((H, W, 3))
+    room = np.random.default_rng(0).integers(0, 255, (H, W, 3), dtype=np.uint8)
+    plate.capture(room)
+    assert plate.known.all() and np.array_equal(plate.plate, room)
+
+
+def test_update_relights_hidden_area():
+    # You're still sitting there when the camera re-exposes: the remembered
+    # wall behind you must follow, even though it can't be seen right now.
+    plate = learnt_plate(200)
+    plate.filled()          # the app fills (and caches the guess) every frame
+    plate.update(np.full((H, W, 3), 150, np.uint8), left_half_mask())
+    filled = plate.filled().astype(np.float32)
+    assert abs(filled[:, :20].mean() - 150) <= 10

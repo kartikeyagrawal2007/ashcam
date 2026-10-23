@@ -54,6 +54,9 @@ class Api:
         if self._snap:
             self._snap.sensitivity = min(1.0, max(0.0, float(value)))
 
+    def capture_room(self) -> None:
+        self._engine.capture_room(countdown_s=5.0)
+
     def set_flip(self, value) -> None:
         self._engine.flip_output = bool(value)
 

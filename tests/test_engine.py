@@ -263,3 +263,67 @@ def test_flip_survives_coming_back():
     _, t = run_until(e, State.PRESENT, lopsided(), t)
     out = e.process(lopsided(), t + 0.5)
     assert np.array_equal(out, cv2.flip(lopsided(), 1))
+
+
+class ArmMissingSegmenter(FakeSegmenter):
+    """Detection flickers: every other frame it misses the right part (an arm)."""
+    def __init__(self):
+        self.n = 0
+
+    def mask(self, frame):
+        self.n += 1
+        m = super().mask(frame)
+        if self.n % 2:
+            m[BOX[0], 70:80] = 0
+        return m
+
+
+def test_flickering_arm_does_not_leak():
+    e = Engine(None, ArmMissingSegmenter(), AwayLoop(), StateMachine())
+    for i in range(5):
+        e.process(scene(80), i / 30)
+    e.toggle_vanish()
+    _, t = run_until(e, State.VANISHED, scene(80), 0.2)
+    for i in range(10):
+        out = e.process(scene(80), t + i / 30)
+        assert out[BOX].max() < 150, i
+
+
+def test_vanished_follows_exposure_change():
+    e = make_engine()
+    for i in range(5):
+        e.process(scene(120), i / 30)
+    e.toggle_vanish()
+    _, t = run_until(e, State.VANISHED, scene(120), 0.2)
+    out = e.process(scene(90), t + 0.1)      # camera darkened the whole room
+    assert abs(int(out[36, 64].mean()) - 90) <= 8
+
+
+class SwitchableSegmenter(FakeSegmenter):
+    present = True
+
+    def mask(self, frame):
+        m = super().mask(frame)
+        return m if self.present else m * 0
+
+
+def test_capture_room_waits_until_you_step_out():
+    seg = SwitchableSegmenter()
+    e = Engine(None, seg, AwayLoop(), StateMachine())
+    e.capture_room(countdown_s=0.0)
+    for i in range(10):
+        e.process(scene(80), i / 30)
+    assert e.status()["room"] == "waiting"
+    seg.present = False
+    for i in range(10, 20):
+        e.process(scene(80, person=80), i / 30)
+    s = e.status()
+    assert s["room"] == "idle" and s["room_saved"] is True
+    assert e._plate.known.all()
+
+
+def test_capture_room_counts_down_first():
+    e = make_engine()
+    e.capture_room(countdown_s=5.0)
+    e.process(scene(80), 0.0)
+    assert e.status()["room"] == "countdown"
