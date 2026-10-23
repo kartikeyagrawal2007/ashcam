@@ -8,26 +8,49 @@ import numpy as np
 SIZE = (1280, 720)
 
 
+def _open_avfoundation(source: int, width: int, height: int, fps: int):
+    cap = cv2.VideoCapture(source, cv2.CAP_AVFOUNDATION)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    cap.set(cv2.CAP_PROP_FPS, fps)
+    return cap
+
+
 class Camera:
     def __init__(self, source: int | str = 0, width: int = SIZE[0], height: int = SIZE[1],
-                 fps: int = 30):
+                 fps: int = 30, opener=None, retry_s: float = 2.0):
         self.size = (width, height)
         self.fps = fps
+        self.source = source
         self.is_file = isinstance(source, str)
-        if self.is_file:
-            self._cap = cv2.VideoCapture(source)
-        else:
-            self._cap = cv2.VideoCapture(source, cv2.CAP_AVFOUNDATION)
-            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            self._cap.set(cv2.CAP_PROP_FPS, fps)
+        self.retry_s = retry_s
+        if opener is None:
+            opener = (cv2.VideoCapture if self.is_file
+                      else lambda src: _open_avfoundation(src, width, height, fps))
+        self._opener = opener
+        self._cap = opener(source)
         self._next = time.monotonic()
+        self._next_try = time.monotonic() + retry_s
 
     @property
     def ok(self) -> bool:
         return self._cap.isOpened()
 
+    def _reopen_if_blocked(self) -> bool:
+        """Until macOS camera access is allowed, try again every retry_s seconds."""
+        if self.is_file or self._cap.isOpened():
+            return True
+        now = time.monotonic()
+        if now < self._next_try:
+            return False
+        self._next_try = now + self.retry_s
+        self._cap.release()
+        self._cap = self._opener(self.source)
+        return self._cap.isOpened()
+
     def read(self) -> np.ndarray | None:
+        if not self._reopen_if_blocked():
+            return None
         if self.is_file:
             # Pace files to real time and loop them.
             time.sleep(max(0.0, self._next - time.monotonic()))

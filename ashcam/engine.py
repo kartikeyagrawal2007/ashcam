@@ -21,7 +21,7 @@ VCAM_HELP = ("OBS Virtual Camera isn't available. Open OBS, click Start Virtual 
              "General → Login Items & Extensions → Camera Extensions. AshCam keeps "
              "retrying, so there's no need to restart it.")
 CAMERA_HELP = ("Can't read the camera. Allow your terminal app in System Settings → "
-               "Privacy & Security → Camera, then restart AshCam.")
+               "Privacy & Security → Camera. AshCam picks it up automatically.")
 
 
 def open_obs_vcam():

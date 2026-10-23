@@ -34,8 +34,9 @@ def main(argv=None) -> int:
     source = int(args.camera) if args.camera.isdigit() else args.camera
     camera = Camera(source)
     if not camera.ok:
-        print("Couldn't open the camera. Allow your terminal app in System Settings → "
-              "Privacy & Security → Camera.", file=sys.stderr)
+        print("Waiting for camera access. Click Allow, or turn on your terminal app in "
+              "System Settings → Privacy & Security → Camera. AshCam picks it up "
+              "automatically.", file=sys.stderr)
 
     dumped = {"last": -1.0}
     started = time.monotonic()
