@@ -145,3 +145,10 @@ def test_silent_mic_reports_permission():
     assert det.mic_error and "Microphone" in det.mic_error
     feed(det, quiet(0.2))
     assert det.mic_error is None
+
+
+def test_muted_on_purpose_is_not_a_permission_problem():
+    det = detector()
+    det.suspended = True
+    feed(det, np.zeros(int(SR * 2.5), np.float32))
+    assert det.mic_error is None

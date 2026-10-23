@@ -42,6 +42,7 @@ class SnapDetector:
         self._isolated = False
         self._zero_blocks = 0
         self.mic_error: str | None = None
+        self.suspended = False   # AshCam muted the mic on purpose; ignore silence
         self._stream = None
         self._lock = threading.Lock()
 
@@ -78,6 +79,9 @@ class SnapDetector:
 
     def process(self, block: np.ndarray, now: float) -> bool:
         block = np.asarray(block, np.float32)
+        if self.suspended:
+            self._zero_blocks = 0
+            return False
         # A denied mic doesn't raise on macOS; it just delivers exact zeros.
         if block.any():
             self._zero_blocks = 0

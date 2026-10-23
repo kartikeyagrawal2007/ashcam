@@ -32,7 +32,7 @@ In your call app, choose **OBS Virtual Camera** as the camera.
 
 | Do this | What happens |
 | --- | --- |
-| Snap, or ⌥⇧V | You turn to dust and vanish. Do it again to come back. |
+| Raise your hand and snap, or ⌥⇧V | You turn to dust, vanish, and your mic mutes. Do it again to come back. |
 | ⌥⇧A | Go away: the call sees a loop of you sitting there. Again to stop. |
 | Record 15 s (panel) | Records the go away clip. Sit naturally and look at the screen. |
 
@@ -43,14 +43,22 @@ Tips:
   again if you move the camera or the lighting changes a lot.
 - If snaps don't register, raise **Sensitivity** and watch the meter cross the
   gold mark. If claps or typing set it off, turn on **Require a double snap**.
-- AshCam doesn't mute your mic. Mute in the call app.
+- Snapping uses both the camera and the mic: the camera has to see your thumb
+  and middle finger snap apart, and the mic has to hear the click. Keep your
+  hand in view (the panel shows "Hand in view"). While you're gone and muted,
+  the snap on camera alone brings you back.
+- While you're vanished, AshCam turns your Mac's microphone input to 0, so
+  you're silent in every app, and puts it back when you return or quit. If
+  AshCam is killed while you're gone, the next start restores the level.
+  Turn this off with **Mute my mic while I'm gone**, or `--no-mute`.
 - If the call's chat box has focus, ⌥⇧V and ⌥⇧A also type ◊ or Å there.
   Snapping avoids that.
 - Music with a beat is ignored, but the first beat after silence can count as
   a snap. Turn on **Require a double snap** if music is playing.
 
 Options: `--camera 1` picks another camera, `--headless` runs without the
-panel, `--no-snap` turns off the mic.
+panel, `--no-snap` turns off the mic, `--no-hands` makes the mic alone trigger
+snaps, `--no-mute` leaves your mic alone.
 
 ## Proctored tests and interviews
 

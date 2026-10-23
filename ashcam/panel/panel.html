@@ -136,6 +136,12 @@
   }
   .meter-legend { display: flex; justify-content: space-between; color: var(--faint); font-size: 12px; }
   .num { font-variant-numeric: tabular-nums; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
+  }
+  .chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+  .chip.on { color: var(--text); }
+  .chip.on .dot { background: #5FD08A; }
 
   label.field { display: grid; gap: 8px; font-size: 13px; color: var(--text); }
   input[type=range] { width: 100%; accent-color: var(--text); margin: 0; min-height: 24px; }
@@ -213,7 +219,10 @@
     </section>
 
     <section class="section" id="snapSection" aria-labelledby="snapTitle">
-      <h2 id="snapTitle">Snap</h2>
+      <div class="row">
+        <h2 id="snapTitle">Snap</h2>
+        <span class="chip" id="handChip" hidden><span class="dot" aria-hidden="true"></span><span id="handText">No hand in view</span></span>
+      </div>
       <p class="hint" id="snapHint">Snap and watch the bar. It vanishes you when it crosses the gold mark.</p>
       <div>
         <div class="meter" aria-hidden="true"><span class="fill" id="fill"></span><span class="mark" id="mark"></span></div>
@@ -230,7 +239,12 @@
     </section>
 
     <section class="section" aria-labelledby="videoTitle">
-      <h2 id="videoTitle">Video</h2>
+      <h2 id="videoTitle">Call</h2>
+      <label class="switch">
+        <span class="text">Mute my mic while I’m gone<small>Turns your Mac’s microphone off when you vanish and back on when you return, in every app.</small></span>
+        <input type="checkbox" id="mute" role="switch" checked>
+        <span class="track" aria-hidden="true"></span>
+      </label>
       <label class="switch">
         <span class="text">Flip the call video<small>Turn on only if people on the call see you reversed. The preview above is always mirrored, like a selfie.</small></span>
         <input type="checkbox" id="flip" role="switch">
@@ -286,6 +300,8 @@ function demoApi() {
       return { state, away, away_rec, away_rec_left: left, has_clip: !!this._clip,
                snap_level: level, vcam_ok: true, error: null, snap_on: true,
                sensitivity: this._s ?? 0.5, double: !!this._d, flip: !!this._f,
+               hands_on: true, hand_seen: Math.floor(now / 2) % 2 === 0,
+               mute_mic: this._m ?? true, mic_muted: (this._m ?? true) && (state === "vanished" || state === "vanishing"),
                ...this._roomStatus(now), threshold: 0.8 - 0.6 * (this._s ?? 0.5) };
     },
     _roomStatus(now) {
@@ -306,6 +322,7 @@ function demoApi() {
     async set_sensitivity(v) { this._s = v; },
     async set_double(v) { this._d = v; },
     async set_flip(v) { this._f = v; },
+    async set_mute_mic(v) { this._m = v; },
   };
 }
 
@@ -314,7 +331,7 @@ let settingsLoaded = false;
 
 function render(s) {
   const [text, tone] = s.away ? ["Go away loop playing", "blue"] : PILL[s.state];
-  $("pillText").textContent = text;
+  $("pillText").textContent = s.mic_muted && !s.away ? `${text} · mic muted` : text;
   $("pill").dataset.tone = tone;
 
   const gone = s.state === "vanished";
@@ -352,8 +369,15 @@ function render(s) {
       : "For a clean vanish, let AshCam see the room without you once. Click Capture room, then step out of view.";
   }
 
-  $("snapSection").classList.toggle("off", !s.snap_on);
-  if (!s.snap_on) {
+  $("handChip").hidden = !s.hands_on;
+  $("handChip").classList.toggle("on", !!s.hand_seen);
+  $("handText").textContent = s.hand_seen ? "Hand in view" : "No hand in view";
+  $("snapSection").classList.toggle("off", !s.snap_on && !s.hands_on);
+  if (s.hands_on && s.snap_on) {
+    $("snapHint").textContent = "Raise your hand so the camera can see it, then snap. The camera spots the snap and the mic confirms the click. While you’re gone and muted, the snap on camera is enough.";
+  } else if (s.hands_on) {
+    $("snapHint").textContent = "The microphone isn’t available, so the snap on camera alone counts. Raise your hand and snap.";
+  } else if (!s.snap_on) {
     $("snapHint").textContent = "Snapping is off because the microphone isn’t available. ⌥⇧V still works.";
   }
   $("fill").style.width = `${Math.min(1, s.snap_level) * 100}%`;
@@ -365,6 +389,7 @@ function render(s) {
     $("sensValue").textContent = $("sens").value;
     $("double").checked = s.double;
     $("flip").checked = s.flip;
+    $("mute").checked = s.mute_mic;
   }
 
   $("alert").classList.toggle("show", !!s.error);
@@ -400,6 +425,7 @@ function start(a) {
   };
   $("double").onchange = (e) => api.set_double(e.target.checked);
   $("flip").onchange = (e) => api.set_flip(e.target.checked);
+  $("mute").onchange = (e) => api.set_mute_mic(e.target.checked);
   pollStatus();
   pollFrame();
 }

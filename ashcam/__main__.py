@@ -10,7 +10,9 @@ import cv2
 from .away import AwayLoop
 from .camera import Camera
 from .engine import Engine
+from .gesture import GestureWorker, HandTracker, SnapFusion
 from .hotkeys import Hotkeys
+from .micmute import MicMuter
 from .segmenter import Segmenter
 from .snap import SnapDetector
 from .state import StateMachine
@@ -22,6 +24,9 @@ def parse(argv):
                    help="camera index (default 0, the built-in camera) or a video file to loop")
     p.add_argument("--headless", action="store_true", help="no control panel")
     p.add_argument("--no-snap", action="store_true", help="don't listen to the mic")
+    p.add_argument("--no-hands", action="store_true",
+                   help="don't watch for the snap on camera (mic alone triggers it)")
+    p.add_argument("--no-mute", action="store_true", help="don't mute the mic while vanished")
     p.add_argument("--seconds", type=float, help="quit after this many seconds")
     p.add_argument("--dump", metavar="DIR", help="save one output frame per second here")
     p.add_argument("--auto", metavar="T", type=float, nargs="*", default=[],
@@ -58,15 +63,38 @@ def main(argv=None) -> int:
     away = AwayLoop()
     engine = Engine(camera, segmenter, away, StateMachine(), sink=dump if args.dump else None)
 
+    # Camera sees the snap, mic confirms the click; either alone falls back.
+    fusion = SnapFusion(on_snap=engine.toggle_vanish)
+    engine.fusion = fusion
+
     snap = None
     if not args.no_snap:
-        snap = SnapDetector(on_snap=engine.toggle_vanish)
+        snap = SnapDetector(on_snap=lambda: fusion.audio(time.monotonic()))
         try:
             snap.start()
             engine.snap = snap
-        except Exception as e:  # no mic or permission denied: hotkeys still work
-            print(f"Snap detection off ({e}). Use ⌥⇧V instead.", file=sys.stderr)
+        except Exception as e:  # no mic or permission denied: hand + hotkeys still work
+            print(f"Mic snap detection off ({e}).", file=sys.stderr)
             snap = None
+
+    gesture = None
+    if not args.no_hands:
+        try:
+            gesture = GestureWorker(HandTracker(), fusion)
+            gesture.start()
+            engine.gesture = gesture
+        except Exception as e:
+            print(f"Hand tracking off ({e}); the mic alone will trigger snaps.", file=sys.stderr)
+            gesture = None
+    fusion.hands_ok = gesture is not None
+    fusion.mic_live = snap is not None
+    if gesture is None and snap is None:
+        print("No snap detection: use ⌥⇧V.", file=sys.stderr)
+
+    muter = MicMuter()
+    muter.restore_leftover()   # a previous run that died while muted
+    muter.enabled = not args.no_mute
+    engine.muter = muter
 
     hotkeys = Hotkeys(on_vanish=engine.toggle_vanish, on_away=engine.toggle_away)
     if not hotkeys.start():
@@ -76,7 +104,7 @@ def main(argv=None) -> int:
 
     engine.start()
     print("AshCam running. In your call app, pick “OBS Virtual Camera”. "
-          "Snap or ⌥⇧V to vanish, ⌥⇧A for go away.")
+          "Raise your hand and snap (or ⌥⇧V) to vanish, ⌥⇧A for go away.")
     try:
         if args.headless:
             run_headless(engine, args, started)
@@ -86,8 +114,10 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        engine.stop()
+        engine.stop()          # also puts the mic back if it was muted
         hotkeys.stop()
+        if gesture:
+            gesture.stop()
         if snap:
             snap.stop()
         camera.close()

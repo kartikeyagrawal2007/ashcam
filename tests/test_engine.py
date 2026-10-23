@@ -327,3 +327,63 @@ def test_capture_room_counts_down_first():
     e.capture_room(countdown_s=5.0)
     e.process(scene(80), 0.0)
     assert e.status()["room"] == "countdown"
+
+
+class FakeMuter:
+    def __init__(self):
+        self.calls, self.muted, self.enabled, self.error = [], False, True, None
+
+    def mute(self):
+        self.calls.append("mute")
+        self.muted = True
+
+    def unmute(self):
+        self.calls.append("unmute")
+        self.muted = False
+
+    def close(self):
+        self.unmute()
+
+
+def test_vanishing_mutes_and_coming_back_unmutes():
+    from ashcam.gesture import SnapFusion
+    e = make_engine()
+    from ashcam.snap import SnapDetector
+    e.muter = FakeMuter()
+    e.snap = SnapDetector(on_snap=lambda: None)
+    e.fusion = SnapFusion(on_snap=e.toggle_vanish)
+    e.process(scene(80), 0.0)
+    e.toggle_vanish()
+    e.process(scene(80), 0.1)
+    assert e.muter.calls == ["mute"] and e.fusion.mic_live is False
+    _, t = run_until(e, State.VANISHED, scene(80), 0.2)
+    e.toggle_vanish()
+    e.process(scene(80), t)
+    assert e.muter.calls == ["mute", "unmute"] and e.fusion.mic_live is True
+
+
+def test_frames_reach_the_hand_tracker():
+    class FakeGesture:
+        hand_seen = True
+
+        def __init__(self):
+            self.frames = 0
+
+        def submit(self, frame, now):
+            self.frames += 1
+
+    e = make_engine()
+    e.gesture = FakeGesture()
+    for i in range(3):
+        e.process(scene(80), i / 30)
+    assert e.gesture.frames == 3
+    s = e.status()
+    assert s["hands_on"] is True and s["hand_seen"] is True
+
+
+def test_status_reports_mute():
+    e = make_engine()
+    e.muter = FakeMuter()
+    e.process(scene(80), 0.0)
+    s = e.status()
+    assert s["mute_mic"] is True and s["mic_muted"] is False

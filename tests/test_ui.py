@@ -97,3 +97,17 @@ def test_capture_room_button():
     api.capture_room()
     engine.process(np.zeros((720, 1280, 3), np.uint8), 0.1)
     assert api.status()["room"] == "countdown"
+
+
+def test_mute_switch():
+    api, engine, _, _ = make()
+
+    class M:
+        enabled, muted, error = True, False, None
+
+        def set_enabled(self, v):
+            self.enabled = v
+
+    engine.muter = M()
+    api.set_mute_mic(False)
+    assert engine.muter.enabled is False and api.status()["mute_mic"] is False

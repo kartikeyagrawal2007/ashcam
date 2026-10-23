@@ -57,6 +57,10 @@ class Api:
     def capture_room(self) -> None:
         self._engine.capture_room(countdown_s=5.0)
 
+    def set_mute_mic(self, value) -> None:
+        if self._engine.muter is not None:
+            self._engine.muter.set_enabled(bool(value))
+
     def set_flip(self, value) -> None:
         self._engine.flip_output = bool(value)
 

@@ -62,6 +62,9 @@ class Engine:
         self.sink = sink
         self.vcam_factory = vcam_factory
         self.snap = None          # SnapDetector, set by main for the level meter
+        self.fusion = None        # SnapFusion: camera + mic snap agreement
+        self.gesture = None       # GestureWorker: hand tracking on its own thread
+        self.muter = None         # MicMuter: silences the mic while you're gone
         self.latest: np.ndarray | None = None
         self.vcam_ok = False
         # Off: the call gets the true image (text behind you reads correctly).
@@ -104,7 +107,8 @@ class Engine:
     @property
     def error(self) -> str | None:
         mic = getattr(self.snap, "mic_error", None) if self.snap else None
-        return self.loop_error or self.camera_error or self.vcam_error or mic
+        mute = getattr(self.muter, "error", None) if self.muter else None
+        return self.loop_error or self.camera_error or self.vcam_error or mic or mute
 
     def status(self) -> dict:
         rec, left = self.away.status(time.monotonic())
@@ -115,6 +119,10 @@ class Engine:
             "away_rec_left": round(left, 1),
             "has_clip": self.away.has_clip,
             "snap_level": float(self.snap.level) if self.snap else 0.0,
+            "hands_on": self.gesture is not None,
+            "hand_seen": bool(getattr(self.gesture, "hand_seen", False)),
+            "mute_mic": bool(self.muter and self.muter.enabled),
+            "mic_muted": bool(self.muter and self.muter.muted),
             "vcam_ok": self.vcam_ok,
             "room": self.room,
             "room_left": round(max(0.0, self._room_at - time.monotonic()), 1),
@@ -142,6 +150,21 @@ class Engine:
                 self._fx = DustEffect(frame, mask, assemble_s=self.sm.return_s,
                                       seed=int(now * 1000) % 2**32)
                 self._fx_mask = mask
+                if self.muter is not None:
+                    if self.sm.state is State.VANISHING:
+                        self.muter.mute()
+                    else:
+                        self.muter.unmute()
+        self._sync_mic()
+
+    def _sync_mic(self) -> None:
+        """Tell the snap detectors whether the mic can be trusted right now."""
+        muted = bool(self.muter and self.muter.muted)
+        if self.snap is not None:
+            self.snap.suspended = muted
+        if self.fusion is not None:
+            self.fusion.mic_live = (self.snap is not None and not muted
+                                    and getattr(self.snap, "mic_error", None) is None)
 
     def process(self, frame: np.ndarray | None, now: float) -> np.ndarray:
         if frame is None:
@@ -157,6 +180,8 @@ class Engine:
 
     def _compose(self, frame: np.ndarray, now: float) -> np.ndarray:
 
+        if self.gesture is not None:
+            self.gesture.submit(frame, now)
         mask = self.segmenter.mask(frame)
         self._apply_pending(frame, mask, now)
         before = self.sm.state
@@ -242,6 +267,8 @@ class Engine:
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=2)
+        if self.muter is not None:
+            self.muter.close()  # never leave the mic muted after quitting
 
     def _loop(self) -> None:
         import traceback
