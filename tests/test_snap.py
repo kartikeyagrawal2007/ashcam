@@ -110,3 +110,38 @@ def test_faint_click_in_silent_room_ignored():
     x = rng.normal(0, 0.0005, SR * 2).astype(np.float32)
     x[SR : SR + len(snap_burst())] += snap_burst() * 0.06
     assert feed(detector(), x) == []
+
+
+def percussive_music(seconds=20, vol=0.3):
+    t = np.arange(int(SR * seconds)) / SR
+    pad = 0.2 * sum(np.sin(2 * np.pi * f * t) for f in (220, 277, 330)) / 3
+    x = (pad + rng.normal(0, 0.003, len(t))).astype(np.float32)
+    hat_n, snare_n = int(SR * 0.03), int(SR * 0.08)
+    hat = band_noise(hat_n, 3000, 9000) * np.exp(-np.arange(hat_n) / SR / 0.008)
+    snare = band_noise(snare_n, 1000, 5000) * np.exp(-np.arange(snare_n) / SR / 0.02)
+    for k in range(int(seconds * 4)):
+        i = int((0.5 + k * 0.25) * SR)
+        burst = (snare if k % 4 == 2 else hat)[: len(x) - i]
+        x[i : i + len(burst)] += (burst * 0.8).astype(np.float32)
+    return x * (vol / 0.3)
+
+
+def test_music_does_not_keep_snapping():
+    for double in (False, True):
+        fires = feed(detector(double=double), percussive_music())
+        assert len(fires) <= 1, (double, fires)
+
+
+def test_snap_after_music_stops_still_works():
+    x = np.concatenate([percussive_music(seconds=4), quiet(1.5)])
+    x[int(SR * 5.0) : int(SR * 5.0) + len(snap_burst())] += snap_burst()
+    fires = feed(detector(), x)
+    assert any(t >= 5.0 for t in fires)
+
+
+def test_silent_mic_reports_permission():
+    det = detector()
+    feed(det, np.zeros(int(SR * 2.5), np.float32))
+    assert det.mic_error and "Microphone" in det.mic_error
+    feed(det, quiet(0.2))
+    assert det.mic_error is None

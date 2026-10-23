@@ -18,7 +18,15 @@ DEFAULT_MODEL = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models
 def ensure_model(path: str = DEFAULT_MODEL) -> str:
     if not os.path.exists(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        urllib.request.urlretrieve(MODEL_URL, path)
+        # Download beside it and move into place, so a cut-off download
+        # never leaves a broken model that fails every later start.
+        part = path + ".part"
+        try:
+            urllib.request.urlretrieve(MODEL_URL, part)
+            os.replace(part, path)
+        finally:
+            if os.path.exists(part):
+                os.remove(part)
     return path
 
 

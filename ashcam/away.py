@@ -6,6 +6,10 @@ from collections import deque
 import cv2
 import numpy as np
 
+# A finished recording shorter than this share of clip_s (camera stalled, or
+# away was on) would loop a few frozen frames, so the old clip is kept.
+MIN_CLIP_SHARE = 0.4
+
 
 def pingpong_index(i: int, n: int) -> int:
     if n <= 1:
@@ -44,6 +48,10 @@ class AwayLoop:
             self._recording = []
             self._rec_start = now + countdown_s
 
+    def cancel_recording(self) -> None:
+        with self._lock:
+            self._recording = None
+
     def status(self, now: float) -> tuple[str, float]:
         if self._recording is None:
             return "idle", 0.0
@@ -60,9 +68,10 @@ class AwayLoop:
             self._recording.append(data)
             full = len(self._recording) >= self.fps * self.clip_s
             if full or now >= self._rec_start + self.clip_s:
-                self._clip = self._recording
+                if len(self._recording) >= MIN_CLIP_SHARE * self.fps * self.clip_s:
+                    self._clip = self._recording
+                    self._playhead = 0
                 self._recording = None
-                self._playhead = 0
 
     def reset_playhead(self) -> None:
         self._playhead = 0

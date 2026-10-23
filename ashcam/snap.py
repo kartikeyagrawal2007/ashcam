@@ -12,6 +12,10 @@ MAX_LOUD_BLOCKS = 4       # longer than this is a sound, not a snap
 REFRACTORY_S = 0.5
 DOUBLE_GAP = (0.12, 0.6)
 MIN_PEAK = 0.035          # band-passed peak a snap must reach at sensitivity 0.5
+ISOLATION_S = 1.0         # a snap stands alone; drum hits repeat within this
+SILENT_S = 2.0            # this long of exact zeros means macOS is blocking the mic
+MIC_HELP = ("Snapping isn't hearing anything. Allow your terminal app in System Settings → "
+            "Privacy & Security → Microphone, then restart AshCam.")
 
 
 class SnapDetector:
@@ -34,6 +38,10 @@ class SnapDetector:
         self._quiet = 0
         self._last_fire = -1e9
         self._first_snap: float | None = None
+        self._last_loud = -1e9
+        self._isolated = False
+        self._zero_blocks = 0
+        self.mic_error: str | None = None
         self._stream = None
         self._lock = threading.Lock()
 
@@ -69,8 +77,17 @@ class SnapDetector:
         self._floor += alpha * (hf - self._floor)
 
     def process(self, block: np.ndarray, now: float) -> bool:
+        block = np.asarray(block, np.float32)
+        # A denied mic doesn't raise on macOS; it just delivers exact zeros.
+        if block.any():
+            self._zero_blocks = 0
+            self.mic_error = None
+        else:
+            self._zero_blocks += 1
+            if self._zero_blocks * self.block >= SILENT_S * self.samplerate:
+                self.mic_error = MIC_HELP
         with self._lock:
-            hf = self._band_peak(np.asarray(block, np.float32))
+            hf = self._band_peak(block)
             if self._floor is None:
                 self._floor = hf
                 return False
@@ -82,20 +99,24 @@ class SnapDetector:
             min_peak = MIN_PEAK * (1.5 - self.sensitivity)
             fired = False
 
+            loud = score > threshold and hf >= min_peak
             if self._peak == 0.0:
-                if score > threshold and hf >= min_peak:
+                if loud:
                     self._peak, self._loud, self._quiet = hf, 1, 0
+                    self._isolated = now - self._last_loud >= ISOLATION_S
             elif hf > self._peak:
                 self._peak, self._loud, self._quiet = hf, self._loud + 1, 0
             elif hf < DECAY_RATIO * self._peak:
                 self._quiet += 1
                 if self._quiet >= DECAY_BLOCKS:
                     self._peak = 0.0
-                    fired = self._on_transient(now)
+                    fired = self._on_transient(now, self._isolated)
             else:
                 self._loud += 1
                 self._quiet = 0
 
+            if loud:
+                self._last_loud = now
             if self._peak and self._loud > MAX_LOUD_BLOCKS:
                 self._peak = 0.0  # sustained sound, not a snap
 
@@ -105,7 +126,7 @@ class SnapDetector:
             self.on_snap()
         return fired
 
-    def _on_transient(self, now: float) -> bool:
+    def _on_transient(self, now: float, isolated: bool) -> bool:
         if now - self._last_fire < REFRACTORY_S:
             return False
         if self.double:
@@ -113,8 +134,10 @@ class SnapDetector:
             if first is not None and DOUBLE_GAP[0] <= now - first <= DOUBLE_GAP[1]:
                 self._first_snap = None
             else:
-                self._first_snap = now
+                self._first_snap = now if isolated else None
                 return False
+        elif not isolated:
+            return False  # part of a rhythm (music), not a lone snap
         self._last_fire = now
         return True
 

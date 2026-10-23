@@ -48,8 +48,14 @@ def main(argv=None) -> int:
 
     if args.dump:
         os.makedirs(args.dump, exist_ok=True)
+    try:
+        segmenter = Segmenter()
+    except Exception as e:
+        print(f"Couldn't load the person-detection model ({e}). The first run needs an "
+              "internet connection to download it (about 250 KB).", file=sys.stderr)
+        return 1
     away = AwayLoop()
-    engine = Engine(camera, Segmenter(), away, StateMachine(), sink=dump if args.dump else None)
+    engine = Engine(camera, segmenter, away, StateMachine(), sink=dump if args.dump else None)
 
     snap = None
     if not args.no_snap:

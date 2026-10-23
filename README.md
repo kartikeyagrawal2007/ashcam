@@ -42,6 +42,10 @@ Tips:
 - If snaps don't register, raise **Sensitivity** and watch the meter cross the
   gold mark. If claps or typing set it off, turn on **Require a double snap**.
 - AshCam doesn't mute your mic. Mute in the call app.
+- If the call's chat box has focus, ⌥⇧V and ⌥⇧A also type ◊ or Å there.
+  Snapping avoids that.
+- Music with a beat is ignored, but the first beat after silence can count as
+  a snap. Turn on **Require a double snap** if music is playing.
 
 Options: `--camera 1` picks another camera, `--headless` runs without the
 panel, `--no-snap` turns off the mic.

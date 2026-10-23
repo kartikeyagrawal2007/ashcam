@@ -39,3 +39,24 @@ def test_recording_flow():
         loop.push(frame(i % 256), now=3.0 + i / 30)
     assert loop.has_clip
     assert loop.status(3.0 + 450 / 30)[0] == "idle"
+
+
+def test_cancel_recording_keeps_old_clip():
+    loop = AwayLoop(fps=30, clip_s=1)
+    loop.start_recording(countdown_s=0.0, now=0.0)
+    for i in range(30):
+        loop.push(frame(i), now=i / 30)
+    assert loop.has_clip
+    loop.start_recording(countdown_s=0.0, now=2.0)
+    loop.push(frame(5), now=2.0)
+    loop.cancel_recording()
+    assert loop.status(2.1)[0] == "idle"
+    assert len(loop._clip) == 30
+
+
+def test_too_short_clip_is_rejected():
+    loop = AwayLoop(fps=30, clip_s=15)
+    loop.start_recording(countdown_s=0.0, now=0.0)
+    loop.push(frame(1), now=20.0)   # recording stalled, then one late frame
+    assert not loop.has_clip
+    assert loop.status(20.0)[0] == "idle"

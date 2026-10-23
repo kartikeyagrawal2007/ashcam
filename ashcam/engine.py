@@ -18,9 +18,17 @@ _GROW = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))  # at 1/4 res: ~9 p
 
 VCAM_HELP = ("OBS Virtual Camera isn't available. Open OBS, click Start Virtual Camera, "
              "then Stop, and quit OBS. If it still fails, turn it on in System Settings → "
-             "General → Login Items & Extensions → Camera Extensions.")
+             "General → Login Items & Extensions → Camera Extensions. AshCam keeps "
+             "retrying, so there's no need to restart it.")
 CAMERA_HELP = ("Can't read the camera. Allow your terminal app in System Settings → "
                "Privacy & Security → Camera, then restart AshCam.")
+
+
+def open_obs_vcam():
+    import pyvirtualcam
+
+    return pyvirtualcam.Camera(OUT_SIZE[0], OUT_SIZE[1], 30,
+                               fmt=pyvirtualcam.PixelFormat.RGB, backend="obs")
 
 
 def feather(mask: np.ndarray) -> np.ndarray:
@@ -38,17 +46,24 @@ def composite(frame: np.ndarray, plate: np.ndarray, hide: np.ndarray) -> np.ndar
 
 
 class Engine:
+    VCAM_RETRY_S = 3.0
+
     def __init__(self, camera, segmenter, away: AwayLoop, sm: StateMachine,
-                 sink: Callable[[np.ndarray], None] | None = None):
+                 sink: Callable[[np.ndarray], None] | None = None,
+                 vcam_factory: Callable[[], object] = open_obs_vcam):
         self.camera = camera
         self.segmenter = segmenter
         self.away = away
         self.sm = sm
         self.sink = sink
+        self.vcam_factory = vcam_factory
         self.snap = None          # SnapDetector, set by main for the level meter
         self.latest: np.ndarray | None = None
         self.vcam_ok = False
-        self.error: str | None = None
+        # Kept apart so one recovering can't hide another that hasn't.
+        self.loop_error: str | None = None
+        self.camera_error: str | None = None
+        self.vcam_error: str | None = None
         self._plate: BackgroundPlate | None = None
         self._fx: DustEffect | None = None
         self._fx_mask: np.ndarray | None = None
@@ -68,6 +83,11 @@ class Engine:
     def toggle_away(self) -> None:
         with self._lock:
             self._pending.append("away")
+
+    @property
+    def error(self) -> str | None:
+        mic = getattr(self.snap, "mic_error", None) if self.snap else None
+        return self.loop_error or self.camera_error or self.vcam_error or mic
 
     def status(self) -> dict:
         rec, left = self.away.status(time.monotonic())
@@ -89,6 +109,11 @@ class Engine:
             if action == "away":
                 self.sm.toggle_away()
                 self.away.reset_playhead()
+                if self.sm.away:
+                    # Recording while away would capture nothing (or the empty chair).
+                    self.away.cancel_recording()
+            elif self.sm.away:
+                continue  # vanish is off while away; coming back must show you
             elif self.sm.toggle_vanish(now):
                 # Vanishing crumbles the person as they are now; returning
                 # reassembles the person who is sitting there now.
@@ -157,32 +182,42 @@ class Engine:
             self._thread.join(timeout=2)
 
     def _loop(self) -> None:
-        import pyvirtualcam
+        import traceback
 
         vcam = None
-        try:
-            vcam = pyvirtualcam.Camera(OUT_SIZE[0], OUT_SIZE[1], 30,
-                                       fmt=pyvirtualcam.PixelFormat.RGB, backend="obs")
-            self.vcam_ok = True
-        except Exception:
-            self.error = VCAM_HELP
+        next_try = 0.0
         misses = 0
         try:
             while self._running:
-                frame = self.camera.read()
-                misses = misses + 1 if frame is None else 0
-                if misses > 30:
-                    self.error = CAMERA_HELP
-                    time.sleep(0.1)
-                elif frame is not None and self.error == CAMERA_HELP:
-                    self.error = None
-                out = self.process(frame, time.monotonic())
-                if self.sink:
-                    self.sink(out)
-                if vcam is not None:
-                    if (out.shape[1], out.shape[0]) != OUT_SIZE:
-                        out = cv2.resize(out, OUT_SIZE)
-                    vcam.send(cv2.cvtColor(out, cv2.COLOR_BGR2RGB))
+                now = time.monotonic()
+                if vcam is None and now >= next_try:
+                    try:
+                        vcam = self.vcam_factory()
+                        self.vcam_ok, self.vcam_error = True, None
+                    except Exception:
+                        self.vcam_ok, self.vcam_error = False, VCAM_HELP
+                        next_try = now + self.VCAM_RETRY_S
+                try:
+                    frame = self.camera.read()
+                    misses = misses + 1 if frame is None else 0
+                    if misses > 30:
+                        self.camera_error = CAMERA_HELP
+                        time.sleep(0.1)
+                    elif frame is not None:
+                        self.camera_error = None
+                    out = self.process(frame, time.monotonic())
+                    if self.sink:
+                        self.sink(out)
+                    if vcam is not None:
+                        if (out.shape[1], out.shape[0]) != OUT_SIZE:
+                            out = cv2.resize(out, OUT_SIZE)
+                        vcam.send(cv2.cvtColor(out, cv2.COLOR_BGR2RGB))
+                    self.loop_error = None
+                except Exception as e:
+                    # Keep the camera alive: one bad frame must not freeze the call.
+                    traceback.print_exc()
+                    self.loop_error = f"AshCam hit an error and is retrying: {e}"
+                    time.sleep(0.05)
         finally:
             if vcam is not None:
                 vcam.close()
