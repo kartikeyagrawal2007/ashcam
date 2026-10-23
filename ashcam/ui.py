@@ -26,6 +26,9 @@ class Api:
         if latest is None:
             return None
         small = cv2.resize(latest, (640, 360), interpolation=cv2.INTER_AREA)
+        # Mirror the preview like every call app's self-view; the call itself
+        # still gets the true image.
+        small = cv2.flip(small, 1)
         ok, jpg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 70])
         return base64.b64encode(jpg.tobytes()).decode("ascii") if ok else None
 
@@ -35,6 +38,7 @@ class Api:
         s["sensitivity"] = self._snap.sensitivity if self._snap else 0.5
         s["double"] = self._snap.double if self._snap else False
         s["threshold"] = self._snap.threshold if self._snap else 1.0
+        s["flip"] = self._engine.flip_output
         return s
 
     def vanish(self) -> None:
@@ -49,6 +53,9 @@ class Api:
     def set_sensitivity(self, value) -> None:
         if self._snap:
             self._snap.sensitivity = min(1.0, max(0.0, float(value)))
+
+    def set_flip(self, value) -> None:
+        self._engine.flip_output = bool(value)
 
     def set_double(self, value) -> None:
         if self._snap:

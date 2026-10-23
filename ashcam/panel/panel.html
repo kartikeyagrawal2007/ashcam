@@ -173,7 +173,7 @@
       <div class="empty" id="empty">Waiting for the camera…</div>
       <span class="pill" id="pill" data-tone="green" role="status"><span class="dot"></span><span id="pillText">You’re visible</span></span>
     </figure>
-    <p class="caption">This is what your call sees.</p>
+    <p class="caption">What your call sees, mirrored like a selfie view.</p>
   </div>
 
   <div class="controls">
@@ -217,6 +217,15 @@
       <label class="switch">
         <span class="text">Require a double snap<small>Fewer accidental triggers from claps and keyboard taps.</small></span>
         <input type="checkbox" id="double" role="switch">
+        <span class="track" aria-hidden="true"></span>
+      </label>
+    </section>
+
+    <section class="section" aria-labelledby="videoTitle">
+      <h2 id="videoTitle">Video</h2>
+      <label class="switch">
+        <span class="text">Flip the call video<small>Turn on only if people on the call see you reversed. The preview above is always mirrored, like a selfie.</small></span>
+        <input type="checkbox" id="flip" role="switch">
         <span class="track" aria-hidden="true"></span>
       </label>
     </section>
@@ -268,7 +277,7 @@ function demoApi() {
       }
       return { state, away, away_rec, away_rec_left: left, has_clip: !!this._clip,
                snap_level: level, vcam_ok: true, error: null, snap_on: true,
-               sensitivity: this._s ?? 0.5, double: !!this._d, threshold: 0.8 - 0.6 * (this._s ?? 0.5) };
+               sensitivity: this._s ?? 0.5, double: !!this._d, flip: !!this._f, threshold: 0.8 - 0.6 * (this._s ?? 0.5) };
     },
     async vanish() {
       if (state === "present") { state = "vanishing"; t0 = performance.now() / 1000; }
@@ -278,6 +287,7 @@ function demoApi() {
     async record() { rec = performance.now() / 1000; },
     async set_sensitivity(v) { this._s = v; },
     async set_double(v) { this._d = v; },
+    async set_flip(v) { this._f = v; },
   };
 }
 
@@ -324,6 +334,7 @@ function render(s) {
     $("sens").value = Math.round(s.sensitivity * 100);
     $("sensValue").textContent = $("sens").value;
     $("double").checked = s.double;
+    $("flip").checked = s.flip;
   }
 
   $("alert").classList.toggle("show", !!s.error);
@@ -357,6 +368,7 @@ function start(a) {
     api.set_sensitivity(e.target.value / 100);
   };
   $("double").onchange = (e) => api.set_double(e.target.checked);
+  $("flip").onchange = (e) => api.set_flip(e.target.checked);
   pollStatus();
   pollFrame();
 }

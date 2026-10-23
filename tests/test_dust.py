@@ -52,3 +52,43 @@ def test_empty_mask_is_noop():
     snap, _, base = scene()
     fx = DustEffect(snap, np.zeros((S, S), np.float32))
     assert np.array_equal(fx.render(base, 1.0), base)
+
+
+def test_assemble_starts_with_no_body():
+    snap, mask, base = scene()
+    out = DustEffect(snap, mask).render_assemble(base, 0.0)
+    # Ash may already be flying through, but none of the person is formed yet.
+    formed = (out[16:48, 16:48].min(axis=2) > 200).mean()
+    assert formed < 0.05
+
+
+def test_assemble_ends_as_person():
+    snap, mask, base = scene()
+    fx = DustEffect(snap, mask)
+    out = fx.render_assemble(base, fx.assemble_s)
+    assert np.array_equal(out[mask > 0.5], snap[mask > 0.5])
+    assert np.array_equal(out[mask == 0], base[mask == 0])
+
+
+def test_assemble_particles_are_solid_in_flight():
+    # Particles fly in at full strength; nothing fades in.
+    snap, mask, base = scene()
+    fx = DustEffect(snap, mask)
+    out = fx.render_assemble(base, fx.assemble_s * 0.4)
+    outside = out[mask == 0]
+    lit = outside[outside.max(axis=1) > 0]
+    assert len(lit) > 20
+    assert lit.max(axis=1).mean() >= 60
+
+
+def test_assemble_body_fills_in_over_time():
+    snap, mask, base = scene()
+    fx = DustEffect(snap, mask)
+    filled = [(fx.render_assemble(base, t)[16:48, 16:48].max(axis=2) > 200).sum()
+              for t in np.linspace(0, fx.assemble_s, 6)]
+    assert filled == sorted(filled) and filled[0] < filled[-1]
+
+
+def test_assemble_is_quick():
+    snap, mask, _ = scene()
+    assert DustEffect(snap, mask).assemble_s <= 1.5

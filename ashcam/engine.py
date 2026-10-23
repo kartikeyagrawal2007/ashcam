@@ -60,6 +60,9 @@ class Engine:
         self.snap = None          # SnapDetector, set by main for the level meter
         self.latest: np.ndarray | None = None
         self.vcam_ok = False
+        # Off: the call gets the true image (text behind you reads correctly).
+        self.flip_output = False
+        self._composed: np.ndarray | None = None   # last output before any flip
         # Kept apart so one recovering can't hide another that hasn't.
         self.loop_error: str | None = None
         self.camera_error: str | None = None
@@ -117,7 +120,8 @@ class Engine:
             elif self.sm.toggle_vanish(now):
                 # Vanishing crumbles the person as they are now; returning
                 # reassembles the person who is sitting there now.
-                self._fx = DustEffect(frame, mask, seed=int(now * 1000) % 2**32)
+                self._fx = DustEffect(frame, mask, assemble_s=self.sm.return_s,
+                                      seed=int(now * 1000) % 2**32)
                 self._fx_mask = mask
 
     def process(self, frame: np.ndarray | None, now: float) -> np.ndarray:
@@ -125,6 +129,14 @@ class Engine:
             if self.latest is None:
                 self.latest = np.zeros((OUT_SIZE[1], OUT_SIZE[0], 3), np.uint8)
             return self.latest
+        out = self._compose(frame, now)
+        self._composed = out
+        # Flip only on the way out, so the room memory, effects and away clip
+        # all stay in the camera's own orientation.
+        self.latest = cv2.flip(out, 1) if self.flip_output else out
+        return self.latest
+
+    def _compose(self, frame: np.ndarray, now: float) -> np.ndarray:
 
         mask = self.segmenter.mask(frame)
         self._apply_pending(frame, mask, now)
@@ -138,7 +150,6 @@ class Engine:
                 out = frame
             elif out.shape != frame.shape:
                 out = cv2.resize(out, (frame.shape[1], frame.shape[0]))
-            self.latest = out
             return out
         if self._was_away:
             self._was_away = False
@@ -153,7 +164,7 @@ class Engine:
         if state is State.PRESENT:
             out = frame
             if before is State.RETURNING:
-                self._xfade_from, self._xfade_start = self.latest, now
+                self._xfade_from, self._xfade_start = self._composed, now
             if self._xfade_from is not None:
                 k = (now - self._xfade_start) / XFADE_S
                 if k >= 1 or self._xfade_from.shape != frame.shape:
@@ -165,10 +176,12 @@ class Engine:
         else:
             hide = feather(np.maximum(self._fx_mask, mask))
             base = composite(frame, self._plate.filled(), hide)
-            out = self._fx.render(base, now - self.sm.started_at,
-                                  reverse=state is State.RETURNING)
+            t = now - self.sm.started_at
+            if state is State.RETURNING:
+                out = self._fx.render_assemble(base, t)
+            else:
+                out = self._fx.render(base, t)
 
-        self.latest = out
         return out
 
     def start(self) -> None:

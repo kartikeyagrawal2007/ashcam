@@ -14,7 +14,7 @@ _NEXT = {State.VANISHING: State.VANISHED, State.RETURNING: State.PRESENT}
 
 
 class StateMachine:
-    def __init__(self, vanish_s: float = 2.5, return_s: float = 2.5):
+    def __init__(self, vanish_s: float = 2.5, return_s: float = 1.2):
         self.vanish_s = vanish_s
         self.return_s = return_s
         self.state = State.PRESENT

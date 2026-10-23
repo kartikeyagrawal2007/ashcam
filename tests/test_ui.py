@@ -72,3 +72,19 @@ def test_works_without_mic():
     api = Api(engine, None, away)
     api.set_sensitivity(0.7)
     assert api.status()["snap_on"] is False
+
+
+def test_preview_is_mirrored_like_a_selfie():
+    api, engine, _, _ = make()
+    f = np.full((720, 1280, 3), 200, np.uint8)
+    f[:, :320] = 0                     # dark on the left of the real image
+    engine.process(f, 0.0)
+    img = cv2.imdecode(np.frombuffer(base64.b64decode(api.frame()), np.uint8), 1)
+    assert img[:, -80:].mean() < 30 and img[:, :80].mean() > 170
+
+
+def test_flip_switch():
+    api, engine, _, _ = make()
+    assert api.status()["flip"] is False
+    api.set_flip(True)
+    assert engine.flip_output is True and api.status()["flip"] is True

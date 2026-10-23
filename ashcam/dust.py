@@ -1,7 +1,8 @@
 """Endgame-style disintegration: the person crumbles into drifting ash.
 
-Every particle's position is a closed-form function of time, so the effect
-can be played backwards (to reassemble) by rendering at `duration - t`.
+`render` crumbles the person away. `render_assemble` brings them back: a
+cloud of tiny ash specks rushes in and snaps into place to rebuild the body.
+Particle positions are closed-form functions of time.
 """
 
 import cv2
@@ -12,14 +13,16 @@ MAX_PARTICLES = 12000
 ASH_BGR = np.array([70, 85, 100], np.float32)   # brownish grey
 EMBER_BGR = np.array([0, 25, 55], np.float32)   # hot edge just before release
 EMBER_S = 0.05
+GLOW_BGR = np.array([150, 205, 245], np.float32)  # incoming specks: bright ember
 WIND = np.array([-90.0, -50.0], np.float32)     # px/s^2 at 720p: blow back and up,
                                                 # away from the side still crumbling
 
 
 class DustEffect:
     def __init__(self, snapshot: np.ndarray, mask: np.ndarray, sweep_s: float = 1.5,
-                 life_s: float = 1.0, seed: int = 0):
+                 life_s: float = 1.0, assemble_s: float = 1.2, seed: int = 0):
         self.sweep_s = sweep_s
+        self.assemble_s = assemble_s
         self.life_s = life_s
         self.duration = sweep_s + life_s
         self._snapshot = snapshot
@@ -63,6 +66,83 @@ class DustEffect:
         self._vel = self._vel.astype(np.float32)
         self._phase = rng.uniform(0, 2 * np.pi, (n, 2)).astype(np.float32)
 
+        # Reassembly: each block lands at its own time, in blotchy patches,
+        # between 30% and 95% of the way through.
+        grain = rng.uniform(0, 1, blotch.shape).astype(np.float32)
+        land = 0.3 + 0.4 * blotch + 0.25 * grain
+        land_px = np.repeat(np.repeat(land, BLOCK, 0), BLOCK, 1)[:h, :w]
+        self._arrive_px = assemble_s * land_px
+        self._arrive = self._arrive_px[cy, cx]
+        # Specks start in a cloud mostly to the left (where the ash blew),
+        # and fly in fast, easing out as they lock into place.
+        span_px = float(max(1, x1 - x0, (ys.max() - ys.min()) if len(ys) else 1))
+        angle = np.pi + rng.uniform(-1.8, 1.8, n)
+        dist = (0.3 + rng.uniform(0, 0.6, n)) * span_px + 30 * self._scale
+        self._start = self._origin + np.stack([np.cos(angle), np.sin(angle)], 1) * dist[:, None]
+        self._start = self._start.astype(np.float32)
+        # Every speck is in the air from the first frame; later landers fly longer.
+        self._flight = np.maximum(self._arrive, 1e-3)
+        self._swirl = rng.uniform(-1, 1, n).astype(np.float32) * 30 * self._scale
+
+    def render_assemble(self, base: np.ndarray, t: float) -> np.ndarray:
+        """Specks rush in from the ash cloud and lock together into the person."""
+        if not self._body.any():
+            return base.copy()
+        out = base.astype(np.float32)
+        if t >= self.assemble_s:
+            out[self._body] = self._snapshot[self._body]
+            return out.astype(np.uint8)
+        h, w = base.shape[:2]
+
+        # Pieces of the body that have landed, with a brief glow as they lock in.
+        landed = self._body & (self._arrive_px <= t)
+        out[landed] = self._snapshot[landed]
+        spark = landed & (t - self._arrive_px < EMBER_S)
+        out[spark] = np.minimum(255, out[spark] + EMBER_BGR)
+
+        # Specks in flight: solid from the start, no fade-in.
+        u = (t - (self._arrive - self._flight)) / np.maximum(self._flight, 1e-6)
+        live = (u >= 0) & (u < 1)
+        if live.any():
+            uu = u[live][:, None]
+            ease = 1 - (1 - uu) ** 3
+            start, origin = self._start[live], self._origin[live]
+            d = origin - start
+            perp = np.stack([-d[:, 1], d[:, 0]], 1) / (np.linalg.norm(d, axis=1, keepdims=True) + 1e-6)
+            curve = perp * (self._swirl[live][:, None] * np.sin(np.pi * uu))
+            pos = start + d * ease + curve
+            cool = uu ** 2  # glowing ember cools into the person's real colour
+            col = GLOW_BGR * (1 - cool) + self._colour[live] * cool
+            self._splat(out, pos, col, np.ones(len(pos), np.float32),
+                        big=np.ones(len(pos), bool))
+        return np.clip(out, 0, 255).astype(np.uint8)
+
+    @staticmethod
+    def _splat(out: np.ndarray, pos: np.ndarray, col: np.ndarray, alpha: np.ndarray,
+               big: np.ndarray) -> None:
+        """Draw specks into `out` (float, in place): 1 px, or 2x2 where `big`."""
+        h, w = out.shape[:2]
+        px = np.round(pos).astype(np.int32)
+        xs, ys, fs, cs = [], [], [], []
+        for dx, dy, sel in ((0, 0, slice(None)), (1, 0, big), (0, 1, big), (1, 1, big)):
+            xs.append(px[sel, 0] + dx)
+            ys.append(px[sel, 1] + dy)
+            fs.append(alpha[sel])
+            cs.append(col[sel])
+        x, y = np.concatenate(xs), np.concatenate(ys)
+        f, c = np.concatenate(fs), np.concatenate(cs)
+        ok = (x >= 0) & (x < w) & (y >= 0) & (y < h)
+        idx, f, c = y[ok] * w + x[ok], f[ok], c[ok]
+        if not len(idx):
+            return
+        # Splat by flat pixel index; bincount is much faster than add.at.
+        hit, inv = np.unique(idx, return_inverse=True)
+        acc_a = np.bincount(inv, f)
+        acc = np.stack([np.bincount(inv, c[:, k] * f) for k in range(3)], 1)
+        flat = out.reshape(-1, 3)
+        a_px = np.minimum(1.0, acc_a)[:, None]
+        flat[hit] = flat[hit] * (1 - a_px) + (acc / acc_a[:, None]) * a_px
+
     def render(self, base: np.ndarray, t: float, reverse: bool = False) -> np.ndarray:
         if reverse:
             t = self.duration - t
@@ -88,25 +168,7 @@ class DustEffect:
             fade = (1 - a / self.life_s)[:, 0]
             ashen = np.minimum(1.0, a * 1.5 / self.life_s)
             col = self._colour[live] * (1 - ashen) + ASH_BGR * ashen
-            px = np.round(pos).astype(np.int32)
             # Fresh specks are 2x2, older ones shrink to a single pixel.
-            big = fade > 0.5
-            xs, ys, fs, cs = [], [], [], []
-            for dx, dy, sel in ((0, 0, slice(None)), (1, 0, big), (0, 1, big), (1, 1, big)):
-                xs.append(px[sel, 0] + dx)
-                ys.append(px[sel, 1] + dy)
-                fs.append(fade[sel])
-                cs.append(col[sel])
-            x, y = np.concatenate(xs), np.concatenate(ys)
-            f, c = np.concatenate(fs), np.concatenate(cs)
-            ok = (x >= 0) & (x < w) & (y >= 0) & (y < h)
-            idx, f, c = y[ok] * w + x[ok], f[ok], c[ok]
-            # Splat by flat pixel index; bincount is much faster than add.at.
-            hit, inv = np.unique(idx, return_inverse=True)
-            alpha = np.bincount(inv, f)
-            acc = np.stack([np.bincount(inv, c[:, k] * f) for k in range(3)], 1)
-            flat = out.reshape(-1, 3)
-            a_px = np.minimum(1.0, alpha)[:, None]
-            flat[hit] = flat[hit] * (1 - a_px) + (acc / alpha[:, None]) * a_px
+            self._splat(out, pos, col, fade, big=fade > 0.5)
 
         return np.clip(out, 0, 255).astype(np.uint8)

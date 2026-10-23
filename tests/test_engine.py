@@ -218,3 +218,48 @@ def test_mic_error_reaches_status():
     e.snap = Snap()
     e.process(scene(80), 0.0)
     assert e.status()["error"] == "Allow Microphone"
+
+
+def test_coming_back_is_quick():
+    e = make_engine()
+    e.process(scene(80), 0.0)
+    e.toggle_vanish()
+    _, t = run_until(e, State.VANISHED, scene(80), 0.1)
+    e.toggle_vanish()
+    e.process(scene(80), t)
+    assert e.sm.state is State.RETURNING
+    _, t_end = run_until(e, State.PRESENT, scene(80), t)
+    assert t_end - t <= 1.5
+
+
+def lopsided():
+    f = scene(80)
+    f[:, : W // 4] = 10   # dark strip on the left only
+    return f
+
+
+def test_output_not_flipped_by_default():
+    e = make_engine()
+    f = lopsided()
+    assert np.array_equal(e.process(f, 0.0), f)
+
+
+def test_flip_output_mirrors_what_the_call_sees():
+    import cv2
+    e = make_engine()
+    e.flip_output = True
+    f = lopsided()
+    assert np.array_equal(e.process(f, 0.0), cv2.flip(f, 1))
+
+
+def test_flip_survives_coming_back():
+    import cv2
+    e = make_engine()
+    e.flip_output = True
+    e.process(lopsided(), 0.0)
+    e.toggle_vanish()
+    _, t = run_until(e, State.VANISHED, lopsided(), 0.1)
+    e.toggle_vanish()
+    _, t = run_until(e, State.PRESENT, lopsided(), t)
+    out = e.process(lopsided(), t + 0.5)
+    assert np.array_equal(out, cv2.flip(lopsided(), 1))
