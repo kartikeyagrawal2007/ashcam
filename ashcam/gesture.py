@@ -149,6 +149,7 @@ class GestureWorker:
         self.fusion = fusion
         self.snap = snap or HandSnap()
         self.hand_seen = False
+        self._points: tuple[np.ndarray, float, tuple[int, int]] | None = None
         self._frame: tuple[np.ndarray, float] | None = None
         self._ready = threading.Event()
         self._running = False
@@ -180,8 +181,19 @@ class GestureWorker:
                            interpolation=cv2.INTER_AREA)
         lm = self.tracker.landmarks(small, now)
         self.hand_seen = lm is not None
+        if lm is not None:
+            self._points = (lm, now, small.shape[:2])
         if self.snap.process(lm, now):
             self.fusion.visual(now)
+
+    def hand_points(self, now: float, shape: tuple[int, int],
+                    max_age_s: float = 0.3) -> np.ndarray | None:
+        """The latest hand landmarks in pixels of a frame of `shape`, if fresh."""
+        pts = self._points
+        if pts is None or now - pts[1] > max_age_s:
+            return None
+        lm, _, (sh, sw) = pts
+        return lm * np.array([shape[1] / sw, shape[0] / sh], np.float32)
 
     def _loop(self) -> None:
         while self._running:

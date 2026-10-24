@@ -408,3 +408,151 @@ def test_snapping_asks_for_an_ai_fill():
     e.process(scene(80), 0.2)
     assert e.ai_filler.requests == 1
     assert e.status()["ai_fill"] == "idle"
+
+
+# --- full invisibility ---------------------------------------------------
+
+ROOM = 150
+
+
+def room_frame(person=True, shadow=False, hair=False, blob_at=None):
+    f = np.full((H, W, 3), ROOM, np.uint8)
+    if shadow:
+        f[20:60, 82:96] = 95                 # your shadow on the wall, right of you
+    if hair:
+        f[50:60, 8:24] = 250                 # an arm the detector is unsure about
+    if person:
+        f[BOX] = 250
+    if blob_at is not None:                  # a moving hand just outside the outline
+        x = blob_at
+        f[30:40, x:x + 6] = 250
+    return f
+
+
+class RoomSegmenter(FakeSegmenter):
+    present = True
+    hair = False
+
+    def mask(self, frame):
+        m = super().mask(frame)
+        if not self.present:
+            return m * 0
+        if self.hair:
+            m[50:60, 8:24] = 0.3             # faint, but it's you
+        return m
+
+
+def vanished_engine(seg, frames_before, t=0.0):
+    e = Engine(None, seg, AwayLoop(), StateMachine())
+    for f in frames_before:
+        e.process(f, t)
+        t += 1 / 30
+    e.toggle_vanish()
+    _, t = run_until(e, State.VANISHED, frames_before[-1], t)
+    return e, t
+
+
+def test_room_is_saved_automatically_when_you_step_away():
+    seg = RoomSegmenter()
+    e = Engine(None, seg, AwayLoop(), StateMachine())
+    for i in range(10):
+        e.process(room_frame(), i / 30)
+    assert not e.room_saved
+    seg.present = False
+    for i in range(10, 50):
+        e.process(room_frame(person=False), i / 30)
+    assert e.room_saved and e._plate.room_ref is not None
+
+
+def test_room_not_saved_while_you_are_there():
+    e = Engine(None, RoomSegmenter(), AwayLoop(), StateMachine())
+    for i in range(60):
+        e.process(room_frame(), i / 30)
+    assert not e.room_saved
+
+
+def stepped_away_then_back(seg, **kw):
+    seg.present = False
+    frames = [room_frame(person=False)] * 40
+    seg.present = True
+    return frames
+
+
+def test_shadow_disappears_with_you():
+    seg = RoomSegmenter()
+    seg.present = False
+    e = Engine(None, seg, AwayLoop(), StateMachine())
+    t = 0.0
+    for _ in range(40):                       # you step out once: room saved
+        e.process(room_frame(person=False), t); t += 1 / 30
+    seg.present = True
+    for _ in range(10):                       # you sit back down, casting a shadow
+        e.process(room_frame(shadow=True), t); t += 1 / 30
+    e.toggle_vanish()
+    _, t = run_until(e, State.VANISHED, room_frame(shadow=True), t)
+    out = e.process(room_frame(shadow=True), t)
+    assert abs(int(out[25:55, 85:94].mean()) - ROOM) <= 10
+
+
+def test_faint_hair_is_hidden_completely():
+    seg = RoomSegmenter()
+    seg.hair = True
+    e, t = vanished_engine(seg, [room_frame(hair=True)] * 10)
+    out = e.process(room_frame(hair=True), t)
+    assert out[50:60, 8:24].max() < 200
+
+
+def test_moving_hand_next_to_you_is_hidden():
+    seg = RoomSegmenter()
+    e, t = vanished_engine(seg, [room_frame()] * 10)
+    for i in range(6):
+        x = 82 + 2 * i                        # hand moving right, outside the outline
+        out = e.process(room_frame(blob_at=x), t + i / 30)
+    assert out[30:40, x:x + 6].max() < 200
+
+
+def test_tracked_hand_is_hidden():
+    class FakeGesture:
+        hand_seen = True
+
+        def submit(self, frame, now):
+            pass
+
+        def hand_points(self, now, shape):
+            return np.array([[100, 28], [112, 28], [112, 44], [100, 44]], np.float32)
+
+    seg = RoomSegmenter()
+    e = Engine(None, seg, AwayLoop(), StateMachine())
+    e.gesture = FakeGesture()
+    t = 0.0
+    for _ in range(10):
+        e.process(room_frame(), t); t += 1 / 30
+    e.toggle_vanish()
+    _, t = run_until(e, State.VANISHED, room_frame(), t)
+    f = room_frame()
+    f[28:44, 100:112] = 250                   # raised hand far from the body outline
+    out = e.process(f, t)
+    assert out[30:42, 102:110].max() < 200
+
+
+def test_no_ai_guessing_once_the_room_is_saved():
+    class FakeAI:
+        state, latest = "idle", None
+        requests = 0
+
+        def request(self, img, hole, tag=None):
+            FakeAI.requests += 1
+
+    seg = RoomSegmenter()
+    seg.present = False
+    e = Engine(None, seg, AwayLoop(), StateMachine())
+    e.ai_filler = FakeAI()
+    t = 0.0
+    for _ in range(40):
+        e.process(room_frame(person=False), t); t += 1 / 30
+    seg.present = True
+    for _ in range(5):
+        e.process(room_frame(), t); t += 1 / 30
+    e.toggle_vanish()
+    e.process(room_frame(), t)
+    assert FakeAI.requests == 0

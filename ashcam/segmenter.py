@@ -41,7 +41,6 @@ class Segmenter:
         )
         self._seg = vision.ImageSegmenter.create_from_options(options)
         self._ts = 0
-        self._prev: np.ndarray | None = None
 
     def mask(self, frame_bgr: np.ndarray) -> np.ndarray:
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -53,12 +52,9 @@ class Segmenter:
             m = m[..., 0]
         if m.shape != frame_bgr.shape[:2]:
             m = cv2.resize(m, (frame_bgr.shape[1], frame_bgr.shape[0]))
-        m = cv2.GaussianBlur(m, (7, 7), 0)
-        # Smooth over time so the edge doesn't flicker.
-        if self._prev is not None and self._prev.shape == m.shape:
-            m = 0.6 * m + 0.4 * self._prev
-        self._prev = m
-        return m
+        # No smoothing over time: it made the outline trail behind moving hands.
+        # The engine steadies the hidden area by combining recent frames instead.
+        return cv2.GaussianBlur(m, (7, 7), 0)
 
     def close(self) -> None:
         self._seg.close()

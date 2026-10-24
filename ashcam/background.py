@@ -58,6 +58,7 @@ class BackgroundPlate:
         self._guess_exposure = np.ones(3, np.float32)
         self._guess_for = -1  # known-pixel count the guess was made for
         self.ai = None        # BackgroundFiller: LaMa fill, computed in the background
+        self.room_ref: np.ndarray | None = None   # the empty room, at exposure 1
 
     def _measure(self, frame: np.ndarray, visible: np.ndarray) -> np.ndarray | None:
         """Camera exposure of `frame`, per channel, against the fixed baseline.
@@ -95,6 +96,7 @@ class BackgroundPlate:
     def capture(self, frame: np.ndarray) -> None:
         """Learn the whole room at once (taken while nobody is in view)."""
         self.plate = frame.copy()
+        self.room_ref = frame.copy()
         self.known[:] = True
         self._streak[:] = LEARN_FRAMES
         self._last = frame
@@ -123,7 +125,18 @@ class BackgroundPlate:
         visible in it right now)."""
         person = cv2.dilate((mask > 0.2).astype(np.uint8), _HALO) > 0
         measured = self._measure(frame, self.known & ~person)
+        if self.room_ref is not None:
+            # A saved empty room beats anything remembered while you sat there:
+            # no shadow of you in it, nothing guessed.
+            return self.room_now(measured)
         return self.filled(exposure=measured)
+
+    def room_now(self, exposure: np.ndarray | None = None) -> np.ndarray:
+        """The saved empty room, lit like the camera is right now."""
+        now = self.exposure if exposure is None else exposure
+        if np.abs(now - 1).max() < RELIGHT_EPS:
+            return self.room_ref
+        return (self.room_ref * now).clip(0, 255).astype(np.uint8)
 
     def _inpaint_guess(self, plate_now: np.ndarray) -> np.ndarray:
         h, w = self.known.shape

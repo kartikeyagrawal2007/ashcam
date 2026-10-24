@@ -16,7 +16,15 @@ from .state import State, StateMachine
 OUT_SIZE = (1280, 720)
 XFADE_S = 0.2
 _GROW = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))  # at 1/4 res: ~9 px each side
-_HIDE_GROW = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))  # at 1/4 res: ~18 px
+_HIDE_CORE = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))    # at 1/4 res: ~12 px
+_HIDE_GROW = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13))  # at 1/4 res: ~24 px
+# Square kernels for the big reaches: OpenCV grows rectangles far faster.
+_SHADOW_REACH = cv2.getStructuringElement(cv2.MORPH_RECT, (101, 101))  # ~200 px around you
+_MOTION_REACH = cv2.getStructuringElement(cv2.MORPH_RECT, (51, 51))    # ~100 px around you
+_SMALL3 = np.ones((3, 3), np.uint8)
+PERSON_THRESHOLD = 0.15  # anything the detector is even a little sure is you
+AUTO_ROOM_FRAMES = 30    # ~1 s with nobody in view: save the empty room
+AUTO_ROOM_EVERY_S = 30.0 # ...and refresh it at most this often
 MASK_MEMORY = 8          # frames of person outline kept when hiding
 ROOM_CLEAR_FRAMES = 5
 AI_REFRESH_S = 5.0       # re-run the AI fill this often while gone, if the room grew    # frames with nobody in view before the room is saved
@@ -74,6 +82,9 @@ class Engine:
         self.flip_output = False
         self._composed: np.ndarray | None = None   # last output before any flip
         self._mask_hist: deque[np.ndarray] = deque(maxlen=MASK_MEMORY)
+        self._prev_gray: np.ndarray | None = None
+        self._empty_frames = 0
+        self._auto_room_at = -1e9
         self.room = "idle"            # idle | countdown | waiting
         self.room_saved = False
         self._room_at = 0.0
@@ -210,8 +221,13 @@ class Engine:
         if self._plate is None or self._plate.plate.shape != frame.shape:
             self._plate = BackgroundPlate(frame.shape)
         self._update_room_capture(frame, mask, now)
-        self._plate.update(frame, mask)
-        self._mask_hist.append(self._small(mask))
+        self._auto_save_room(frame, mask, now)
+        you = self._everything_of_you(frame, mask, now)
+        # The room memory must not learn your shadow, hand or motion either.
+        h, w = mask.shape
+        self._plate.update(frame, np.maximum(mask, cv2.resize(
+            you, (w, h), interpolation=cv2.INTER_NEAREST)))
+        self._mask_hist.append(you)
 
         if state is State.PRESENT:
             out = frame
@@ -241,6 +257,8 @@ class Engine:
         return out
 
     def _ask_ai_fill(self, now: float) -> None:
+        if self._plate.room_ref is not None:
+            return  # the real empty room is saved: nothing to guess
         self._plate.ai = self.ai_filler
         self._plate.request_ai_fill()
         self._ai_asked_at = (now, int(self._plate.known.sum()))
@@ -250,18 +268,69 @@ class Engine:
         h, w = mask.shape
         return cv2.resize(mask, (max(1, w // 4), max(1, h // 4)), interpolation=cv2.INTER_AREA)
 
+    def _everything_of_you(self, frame: np.ndarray, mask: np.ndarray, now: float) -> np.ndarray:
+        """1/4-size map of everything that's you this frame: the detected
+        outline (even where the detector is unsure), your tracked hand, things
+        moving right next to you, and your shadow on the wall."""
+        person = (self._small(mask) > PERSON_THRESHOLD).astype(np.float32)
+        you = person.copy()
+        sh, sw = person.shape
+        small = cv2.resize(frame, (sw, sh), interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        near = cv2.dilate(person, _MOTION_REACH) > 0
+
+        # Motion next to you: a hand or hair the detector hasn't caught up with.
+        if self._prev_gray is not None and self._prev_gray.shape == gray.shape and person.any():
+            moving = (cv2.absdiff(gray, self._prev_gray) > 18) & near
+            you = np.maximum(you, cv2.dilate(moving.astype(np.float32), _SMALL3))
+        self._prev_gray = gray
+
+        # Your hand, from the hand tracker.
+        pts = self.gesture.hand_points(now, (sh, sw)) if (
+            self.gesture is not None and hasattr(self.gesture, "hand_points")) else None
+        if pts is not None:
+            hand = np.zeros_like(person)
+            cv2.fillConvexPoly(hand, cv2.convexHull(pts.astype(np.int32)), 1.0)
+            you = np.maximum(you, cv2.dilate(hand, _SMALL3, iterations=2))
+
+        # Your shadow: darker than the saved empty room, same colour, close by.
+        if self._plate is not None and self._plate.room_ref is not None and person.any():
+            room = cv2.resize(self._plate.room_now(), (sw, sh), interpolation=cv2.INTER_AREA)
+            live_f, room_f = small.astype(np.float32) + 1, room.astype(np.float32) + 1
+            ratio = live_f.sum(axis=2) / room_f.sum(axis=2)
+            chroma = np.abs(live_f / live_f.sum(axis=2, keepdims=True)
+                            - room_f / room_f.sum(axis=2, keepdims=True)).max(axis=2)
+            reach = cv2.dilate(person, _SHADOW_REACH) > 0
+            shadow = (reach & (ratio > 0.3) & (ratio < 0.9) & (chroma < 0.05)).astype(np.uint8)
+            shadow = cv2.morphologyEx(shadow, cv2.MORPH_OPEN, _SMALL3)
+            you = np.maximum(you, cv2.dilate(shadow.astype(np.float32), _SMALL3))
+        return you
+
     def _hide_mask(self, extra: np.ndarray | None = None) -> np.ndarray:
         """Where to show the room instead of the camera.
 
-        The union of the last few frames' outlines, grown and softened, so a
-        hand or shoulder the detector misses for a frame never flickers through.
-        """
+        Everything that was you in the last few frames, fully hidden with a
+        margin, and the soft blend placed outside it, on the wall."""
         small = np.max(np.stack(self._mask_hist), axis=0)
         if extra is not None:
-            small = np.maximum(small, self._small(extra))
-        small = cv2.GaussianBlur(cv2.dilate(small, _HIDE_GROW), (9, 9), 0)
+            small = np.maximum(small, (self._small(extra) > PERSON_THRESHOLD).astype(np.float32))
+        core = cv2.dilate(small, _HIDE_CORE)
+        soft = cv2.GaussianBlur(cv2.dilate(small, _HIDE_GROW), (9, 9), 0)
+        small = np.maximum(core, soft)
         h, w = self._plate.known.shape
         return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+
+    def _auto_save_room(self, frame: np.ndarray, mask: np.ndarray, now: float) -> None:
+        """Save the empty room by itself whenever nobody's been in view ~1 s."""
+        if self.room != "idle" or self.sm.away:
+            self._empty_frames = 0
+            return
+        self._empty_frames = self._empty_frames + 1 if mask.max() < 0.5 else 0
+        if (self._empty_frames >= AUTO_ROOM_FRAMES
+                and now - self._auto_room_at >= AUTO_ROOM_EVERY_S):
+            self._plate.capture(frame)
+            self.room_saved = True
+            self._auto_room_at = now
 
     def _update_room_capture(self, frame: np.ndarray, mask: np.ndarray, now: float) -> None:
         if self.room == "countdown" and now >= self._room_at:

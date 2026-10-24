@@ -126,3 +126,21 @@ def test_worker_reports_a_seen_snap():
         w.submit(img, i / FPS)
         w.step()
     assert fired == [1] and w.hand_seen
+
+
+def test_worker_shares_hand_points_in_frame_pixels():
+    from ashcam.gesture import GestureWorker
+
+    class OneHand:
+        def landmarks(self, frame, now):
+            lm = np.zeros((21, 2), np.float32)
+            lm[:, 0], lm[:, 1] = 320, 180           # centre of the 640x360 tracking frame
+            return lm
+
+    f, _ = fusion()
+    w = GestureWorker(OneHand(), f)
+    w.submit(np.zeros((720, 1280, 3), np.uint8), 1.0)
+    w.step()
+    pts = w.hand_points(now=1.1, shape=(720, 1280))
+    assert pts is not None and np.allclose(pts[0], (640, 360))
+    assert w.hand_points(now=2.0, shape=(720, 1280)) is None   # stale: hand gone

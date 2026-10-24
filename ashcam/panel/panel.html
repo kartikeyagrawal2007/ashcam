@@ -206,7 +206,7 @@
         <h2 id="roomTitle">Empty room</h2>
         <button class="btn" id="room"><span id="roomLabel">Capture room</span></button>
       </div>
-      <p class="hint" id="roomHint">For a clean vanish, let AshCam see the room without you once. Click Capture room, then step out of view.</p>
+      <p class="hint" id="roomHint">Step out of view for a second once and AshCam saves the empty room by itself, for a perfect vanish with no shadow. Or click Capture room.</p>
     </section>
 
     <section class="section" aria-labelledby="clipTitle">
@@ -365,8 +365,8 @@ function render(s) {
     $("roomHint").textContent = "Still seeing you. Step fully out of view, then wait a moment.";
   } else {
     $("roomHint").textContent = s.room_saved
-      ? "Room saved. Capture again if you move the camera or the lighting changes a lot."
-      : "For a clean vanish, let AshCam see the room without you once. Click Capture room, then step out of view.";
+      ? "Empty room saved. It refreshes by itself whenever you step out of view."
+      : "Step out of view for a second once and AshCam saves the empty room by itself, for a perfect vanish with no shadow. Or click Capture room.";
   }
 
   $("handChip").hidden = !s.hands_on;
