@@ -107,3 +107,24 @@ def test_update_relights_hidden_area():
     plate.update(np.full((H, W, 3), 150, np.uint8), left_half_mask())
     filled = plate.filled().astype(np.float32)
     assert abs(filled[:, :20].mean() - 150) <= 10
+
+
+def test_exposure_wobble_never_drifts_to_black():
+    # Real cameras hunt exposure by a percent or two every frame. Over a
+    # minute of sitting still, the room behind you must stay the room.
+    import cv2
+    h, w = 180, 320
+    rng = np.random.default_rng(1)
+    room = np.clip(200 + cv2.GaussianBlur(rng.normal(0, 20, (h, w, 3)), (0, 0), 3), 0, 255)
+    person = np.zeros((h, w), np.float32)
+    cv2.ellipse(person, (160, 140), (55, 65), 0, 0, 360, 1, -1)
+    hidden = person > 0
+    plate = BackgroundPlate((h, w, 3))
+    for i in range(1800):
+        gain = 1 + rng.normal(0, 0.02)
+        frame = np.clip(room * gain, 0, 255).astype(np.uint8)
+        frame[hidden] = 30
+        plate.update(frame, person)
+        filled = plate.filled()
+        if i > 30:
+            assert abs(filled[hidden].mean() - 200 * gain) < 25, i

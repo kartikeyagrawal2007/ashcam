@@ -1,4 +1,12 @@
-"""Live clean plate: remembers every part of the room the person isn't covering."""
+"""Live clean plate: remembers every part of the room the person isn't covering.
+
+Cameras keep re-adjusting exposure and white balance, so a part of the room
+last seen a minute ago is often darker or bluer than the live picture. Each
+block of the plate is stamped with the camera's exposure at the moment it was
+written; when the plate is used, every block is scaled by "exposure now ÷
+exposure then". The exposure is measured fresh each frame against a fixed
+baseline, so nothing is multiplied into the plate and errors can't pile up.
+"""
 
 import cv2
 import numpy as np
@@ -9,8 +17,9 @@ _GROW_HOLE = np.ones((3, 3), np.uint8)
 # A pixel must look like background this many frames in a row before it is
 # learnt, so a segmenter dropout or two can't burn the person into the room.
 LEARN_FRAMES = 3
-GAIN_RANGE = (0.5, 2.0)
-RELIGHT_THRESHOLD = 0.02   # ignore brightness changes smaller than 2%
+EXPOSURE_RANGE = (0.25, 4.0)
+MIN_BLOCKS = 4              # visible room blocks needed to trust a measurement
+RELIGHT_EPS = 0.01          # skip the full-size multiply below 1% difference
 
 
 def _block_mean(img: np.ndarray, valid: np.ndarray):
@@ -25,113 +34,85 @@ def _block_mean(img: np.ndarray, valid: np.ndarray):
     return total / np.maximum(cover, 1e-6)[..., None], cover
 
 
-def _spread(ratio: np.ndarray, ok: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
-    """Smooth a block-level gain across the frame from the blocks in `ok`
-    (normalised convolution), at full size."""
-    valid = ok.astype(np.float32)
-    sigma = max(1.0, ratio.shape[1] / 10)
-    weight = cv2.GaussianBlur(valid, (0, 0), sigma)
-    spread = cv2.GaussianBlur(ratio * valid[..., None], (0, 0), sigma)
-    overall = (ratio * valid[..., None]).sum(axis=(0, 1)) / max(valid.sum(), 1e-6)
-    g = np.where(weight[..., None] > 1e-3, spread / np.maximum(weight[..., None], 1e-6), overall)
-    return cv2.resize(g.astype(np.float32), (shape[1], shape[0]), interpolation=cv2.INTER_LINEAR)
-
-
-def _scale(img: np.ndarray, g: np.ndarray) -> np.ndarray:
-    return cv2.multiply(img.astype(np.float32), g).clip(0, 255).astype(np.uint8)
+def _scale(img: np.ndarray, factor_small: np.ndarray) -> np.ndarray:
+    """Multiply `img` by a per-block, per-channel factor, smoothly upsampled."""
+    h, w = img.shape[:2]
+    f = cv2.resize(factor_small.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+    return cv2.multiply(img.astype(np.float32), f).clip(0, 255).astype(np.uint8)
 
 
 class BackgroundPlate:
     def __init__(self, shape: tuple[int, int, int]):
+        h, w = shape[:2]
+        sw, sh = max(1, w // 8), max(1, h // 8)
         self.plate = np.zeros(shape, np.uint8)
         self.known = np.zeros(shape[:2], bool)
         self._streak = np.zeros(shape[:2], np.uint8)
         self._last: np.ndarray | None = None
+        # Brightness bookkeeping (per 8x8 block, per channel).
+        self._base = np.zeros((sh, sw, 3), np.float32)   # block brightness at exposure 1
+        self._base_ok = np.zeros((sh, sw), bool)
+        self._stamp = np.ones((sh, sw, 3), np.float32)   # exposure when last written
+        self.exposure = np.ones(3, np.float32)           # camera exposure now
         self._guess: np.ndarray | None = None
+        self._guess_exposure = np.ones(3, np.float32)
         self._guess_for = -1  # known-pixel count the guess was made for
-        self._ref: np.ndarray | None = None        # block means at the last re-light
-        self._ref_cover: np.ndarray | None = None
+
+    def _measure(self, frame: np.ndarray, visible: np.ndarray) -> np.ndarray | None:
+        """Camera exposure of `frame`, per channel, against the fixed baseline.
+
+        The median over every visible block that has a baseline: robust to a
+        few changed objects and to noise, and computed fresh every time."""
+        live, cover = _block_mean(frame, visible)
+        ok = (cover > 0.5) & self._base_ok
+        if ok.sum() < MIN_BLOCKS:
+            return None
+        ratios = live[ok] / np.maximum(self._base[ok], 8.0)
+        return np.clip(np.median(ratios, axis=0), *EXPOSURE_RANGE).astype(np.float32)
 
     def update(self, frame: np.ndarray, mask: np.ndarray) -> None:
         person = cv2.dilate((mask > 0.2).astype(np.uint8), _HALO) > 0
         self._streak = np.where(person, 0, np.minimum(self._streak + 1, LEARN_FRAMES))
         self._streak = self._streak.astype(np.uint8)
         learn = self._streak >= LEARN_FRAMES
-        self._relight_hidden(frame, self.known & learn)
+        measured = self._measure(frame, learn & self.known)
+        if measured is not None:
+            self.exposure = measured
         np.copyto(self.plate, frame, where=learn[..., None])
         self.known |= learn
         self._last = frame
-        self._adopt_new_blocks()
-
-    def _adopt_new_blocks(self) -> None:
-        """Give newly learnt parts of the room a brightness baseline."""
-        if self._ref is not None and (self._ref_cover > 0.5).all():
-            return
+        # Blocks just written carry today's exposure.
+        _, written = _block_mean(frame, learn)
+        self._stamp[written > 0.5] = self.exposure
+        # Blocks seen for the first time get a baseline, in exposure-1 units.
         mean, cover = _block_mean(self.plate, self.known)
-        if self._ref is None:
-            self._ref, self._ref_cover = mean, cover
-            return
-        new = (cover > 0.5) & ~(self._ref_cover > 0.5)
-        self._ref[new], self._ref_cover[new] = mean[new], cover[new]
-
-    def _relight_hidden(self, frame: np.ndarray, visible: np.ndarray) -> None:
-        """Re-light what can't be seen right now (behind you, and the guess).
-
-        Compares the live room with how it looked at the last re-light, so
-        slow exposure drift adds up instead of slipping by a frame at a time.
-        Only does the full-size multiply when the light has really moved.
-        """
-        if self._ref is None or not visible.any():
-            return
-        live, cover = _block_mean(frame, visible)
-        both = (cover > 0.5) & (self._ref_cover > 0.5)
-        if not both.any():
-            return
-        ratio = np.clip(live / np.maximum(self._ref, 8.0), *GAIN_RANGE)
-        if np.abs(ratio[both] - 1).max() < RELIGHT_THRESHOLD:
-            return
-        g = _spread(ratio, both, self.known.shape)
-        self.plate = _scale(self.plate, g)
-        if self._guess is not None:
-            self._guess = _scale(self._guess, g)
-        self._ref[both] = live[both]
+        new = (cover > 0.5) & ~self._base_ok
+        if new.any():
+            self._base[new] = mean[new] / self.exposure
+            self._base_ok[new] = True
 
     def capture(self, frame: np.ndarray) -> None:
         """Learn the whole room at once (taken while nobody is in view)."""
         self.plate = frame.copy()
         self.known[:] = True
-        self._ref = None
-        self._guess = None
-        self._guess_for = -1
         self._streak[:] = LEARN_FRAMES
         self._last = frame
-        self._adopt_new_blocks()
+        self.exposure = np.ones(3, np.float32)
+        self._stamp[:] = 1.0
+        self._base, cover = _block_mean(frame, self.known)
+        self._base_ok = cover > 0.5
+        self._guess, self._guess_for = None, -1
 
     def matched(self, frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """The remembered room, re-lit to match the live frame.
-
-        Cameras keep re-adjusting exposure and white balance, so a room
-        remembered a minute ago is often a little darker or bluer than the
-        live picture, and the hidden area shows as a patch. Compare the two
-        wherever the room is visible right now, spread that per-channel gain
-        smoothly across the hidden area, and apply it.
-        """
-        base = self.filled()
+        """The remembered room, lit like `frame` (measured where the room is
+        visible in it right now)."""
         person = cv2.dilate((mask > 0.2).astype(np.uint8), _HALO) > 0
-        valid = self.known & ~person
-        live, cover = _block_mean(frame, valid)
-        old, _ = _block_mean(base, valid)
-        ok = cover > 0.5
-        if not ok.any():
-            return base
-        ratio = np.clip(live / np.maximum(old, 8.0), *GAIN_RANGE)
-        if np.abs(ratio[ok] - 1).max() < RELIGHT_THRESHOLD:
-            return base
-        return _scale(base, _spread(ratio, ok, self.known.shape))
+        measured = self._measure(frame, self.known & ~person)
+        return self.filled(exposure=measured)
 
-    def _inpaint_guess(self) -> np.ndarray:
+    def _inpaint_guess(self, plate_now: np.ndarray) -> np.ndarray:
         h, w = self.known.shape
-        small = cv2.resize(self.plate, (w // 4, h // 4), interpolation=cv2.INTER_AREA)
+        small = cv2.resize(plate_now, (w // 4, h // 4), interpolation=cv2.INTER_AREA)
         hole = cv2.resize((~self.known).astype(np.uint8), (w // 4, h // 4),
                           interpolation=cv2.INTER_NEAREST)
         # Downscaling blends never-seen (black) pixels into the hole's border;
@@ -140,11 +121,10 @@ class BackgroundPlate:
         guess = cv2.inpaint(small, hole, 5, cv2.INPAINT_TELEA)
         return cv2.resize(guess, (w, h), interpolation=cv2.INTER_LINEAR)
 
-    def filled(self) -> np.ndarray:
-        """Plate with never-seen areas inpainted, so there's never a hole."""
+    def filled(self, exposure: np.ndarray | None = None) -> np.ndarray:
+        """Plate lit for `exposure` (default: the latest measured), with
+        never-seen areas inpainted, so there's never a hole."""
         count = int(self.known.sum())
-        if count == self.known.size:
-            return self.plate
         if count == 0:
             # Nothing seen yet: a heavy blur of the frame beats a black screen.
             if self._last is None:
@@ -153,8 +133,20 @@ class BackgroundPlate:
             tiny = cv2.resize(self._last, (max(1, w // 32), max(1, h // 32)),
                               interpolation=cv2.INTER_AREA)
             return cv2.resize(tiny, (w, h), interpolation=cv2.INTER_LINEAR)
+        now = self.exposure if exposure is None else exposure
+        factor = now / self._stamp
+        if np.abs(factor - 1).max() < RELIGHT_EPS:
+            plate_now = self.plate
+        else:
+            plate_now = _scale(self.plate, factor)
+        if count == self.known.size:
+            return plate_now
         # Inpainting is the slow part; only redo it when new pixels got seen.
         if count != self._guess_for:
-            self._guess = self._inpaint_guess()
+            self._guess = self._inpaint_guess(plate_now)
+            self._guess_exposure = now.copy()
             self._guess_for = count
-        return np.where(self.known[..., None], self.plate, self._guess)
+        g = now / self._guess_exposure
+        guess = self._guess if np.abs(g - 1).max() < RELIGHT_EPS else \
+            (self._guess * g).clip(0, 255).astype(np.uint8)
+        return np.where(self.known[..., None], plate_now, guess)
