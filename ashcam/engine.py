@@ -18,7 +18,8 @@ XFADE_S = 0.2
 _GROW = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))  # at 1/4 res: ~9 px each side
 _HIDE_GROW = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))  # at 1/4 res: ~18 px
 MASK_MEMORY = 8          # frames of person outline kept when hiding
-ROOM_CLEAR_FRAMES = 5    # frames with nobody in view before the room is saved
+ROOM_CLEAR_FRAMES = 5
+AI_REFRESH_S = 5.0       # re-run the AI fill this often while gone, if the room grew    # frames with nobody in view before the room is saved
 
 VCAM_HELP = ("OBS Virtual Camera isn't available. Open OBS, click Start Virtual Camera, "
              "then Stop, and quit OBS. If it still fails, turn it on in System Settings → "
@@ -65,6 +66,8 @@ class Engine:
         self.fusion = None        # SnapFusion: camera + mic snap agreement
         self.gesture = None       # GestureWorker: hand tracking on its own thread
         self.muter = None         # MicMuter: silences the mic while you're gone
+        self.ai_filler = None     # BackgroundFiller: LaMa fill of the never-seen room
+        self._ai_asked_at = (0.0, -1)
         self.latest: np.ndarray | None = None
         self.vcam_ok = False
         # Off: the call gets the true image (text behind you reads correctly).
@@ -124,6 +127,7 @@ class Engine:
             "mute_mic": bool(self.muter and self.muter.enabled),
             "mic_muted": bool(self.muter and self.muter.muted),
             "vcam_ok": self.vcam_ok,
+            "ai_fill": getattr(self.ai_filler, "state", "off") if self.ai_filler else "off",
             "room": self.room,
             "room_left": round(max(0.0, self._room_at - time.monotonic()), 1),
             "room_saved": self.room_saved,
@@ -150,6 +154,8 @@ class Engine:
                 self._fx = DustEffect(frame, mask, assemble_s=self.sm.return_s,
                                       seed=int(now * 1000) % 2**32)
                 self._fx_mask = mask
+                if self.sm.state is State.VANISHING and self._plate is not None:
+                    self._ask_ai_fill(now)
                 if self.muter is not None:
                     if self.sm.state is State.VANISHING:
                         self.muter.mute()
@@ -218,6 +224,10 @@ class Engine:
                 else:
                     out = cv2.addWeighted(self._xfade_from, 1 - k, frame, k, 0)
         elif state is State.VANISHED:
+            asked, count = self._ai_asked_at
+            if (self.ai_filler is not None and now - asked > AI_REFRESH_S
+                    and abs(int(self._plate.known.sum()) - count) > 0.005 * self._plate.known.size):
+                self._ask_ai_fill(now)
             out = composite(frame, self._plate.matched(frame, mask), self._hide_mask())
         else:
             hide = self._hide_mask(extra=self._fx_mask)
@@ -229,6 +239,11 @@ class Engine:
                 out = self._fx.render(base, t)
 
         return out
+
+    def _ask_ai_fill(self, now: float) -> None:
+        self._plate.ai = self.ai_filler
+        self._plate.request_ai_fill()
+        self._ai_asked_at = (now, int(self._plate.known.sum()))
 
     @staticmethod
     def _small(mask: np.ndarray) -> np.ndarray:

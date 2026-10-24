@@ -1,6 +1,7 @@
 numpy
 opencv-python
 mediapipe
+onnxruntime
 pyvirtualcam>=0.14
 sounddevice
 pynput

@@ -10,6 +10,7 @@ import cv2
 from .away import AwayLoop
 from .camera import Camera
 from .engine import Engine
+from .fill import BackgroundFiller
 from .gesture import GestureWorker, HandTracker, SnapFusion
 from .hotkeys import Hotkeys
 from .micmute import MicMuter
@@ -27,6 +28,8 @@ def parse(argv):
     p.add_argument("--no-hands", action="store_true",
                    help="don't watch for the snap on camera (mic alone triggers it)")
     p.add_argument("--no-mute", action="store_true", help="don't mute the mic while vanished")
+    p.add_argument("--no-ai-fill", action="store_true",
+                   help="fill the unseen wall behind you with the quick classic fill only")
     p.add_argument("--seconds", type=float, help="quit after this many seconds")
     p.add_argument("--dump", metavar="DIR", help="save one output frame per second here")
     p.add_argument("--auto", metavar="T", type=float, nargs="*", default=[],
@@ -90,6 +93,12 @@ def main(argv=None) -> int:
     fusion.mic_live = snap is not None
     if gesture is None and snap is None:
         print("No snap detection: use ⌥⇧V.", file=sys.stderr)
+
+    if not args.no_ai_fill:
+        # LaMa fills the part of the room AshCam never saw. ~200 MB, downloaded
+        # once; loads in the background so startup stays instant.
+        engine.ai_filler = BackgroundFiller()
+        engine.ai_filler.preload()
 
     muter = MicMuter()
     muter.restore_leftover()   # a previous run that died while muted

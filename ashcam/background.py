@@ -57,6 +57,7 @@ class BackgroundPlate:
         self._guess: np.ndarray | None = None
         self._guess_exposure = np.ones(3, np.float32)
         self._guess_for = -1  # known-pixel count the guess was made for
+        self.ai = None        # BackgroundFiller: LaMa fill, computed in the background
 
     def _measure(self, frame: np.ndarray, visible: np.ndarray) -> np.ndarray | None:
         """Camera exposure of `frame`, per channel, against the fixed baseline.
@@ -102,6 +103,20 @@ class BackgroundPlate:
         self._base, cover = _block_mean(frame, self.known)
         self._base_ok = cover > 0.5
         self._guess, self._guess_for = None, -1
+        if self.ai is not None:
+            self.ai.latest = None   # nothing left to fill
+
+    def request_ai_fill(self) -> None:
+        """Ask the AI filler to fill the never-seen area, in the background."""
+        if self.ai is None or self.known.all() or not self.known.any():
+            return
+        now = self.exposure.copy()
+        self.ai.request(self._lit(self.plate, now / self._stamp), ~self.known,
+                        tag=now)
+
+    @staticmethod
+    def _lit(img: np.ndarray, factor: np.ndarray) -> np.ndarray:
+        return img if np.abs(factor - 1).max() < RELIGHT_EPS else _scale(img, factor)
 
     def matched(self, frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
         """The remembered room, lit like `frame` (measured where the room is
@@ -134,13 +149,18 @@ class BackgroundPlate:
                               interpolation=cv2.INTER_AREA)
             return cv2.resize(tiny, (w, h), interpolation=cv2.INTER_LINEAR)
         now = self.exposure if exposure is None else exposure
-        factor = now / self._stamp
-        if np.abs(factor - 1).max() < RELIGHT_EPS:
-            plate_now = self.plate
-        else:
-            plate_now = _scale(self.plate, factor)
+        plate_now = self._lit(self.plate, now / self._stamp)
         if count == self.known.size:
             return plate_now
+        # The AI fill, once ready: still valid as the room is learnt, since
+        # the never-seen area only ever shrinks.
+        ai = self.ai.latest if self.ai is not None else None
+        if ai is not None and ai[0].shape == self.plate.shape:
+            filled_img, made_at = ai
+            g = now / made_at
+            ai_now = filled_img if np.abs(g - 1).max() < RELIGHT_EPS else \
+                (filled_img * g).clip(0, 255).astype(np.uint8)
+            return np.where(self.known[..., None], plate_now, ai_now)
         # Inpainting is the slow part; only redo it when new pixels got seen.
         if count != self._guess_for:
             self._guess = self._inpaint_guess(plate_now)

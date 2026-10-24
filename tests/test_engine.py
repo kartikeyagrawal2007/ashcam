@@ -387,3 +387,24 @@ def test_status_reports_mute():
     e.process(scene(80), 0.0)
     s = e.status()
     assert s["mute_mic"] is True and s["mic_muted"] is False
+
+
+def test_snapping_asks_for_an_ai_fill():
+    class FakeAI:
+        state, latest = "idle", None
+
+        def __init__(self):
+            self.requests = 0
+
+        def request(self, img, hole, tag=None):
+            self.requests += 1
+
+    e = make_engine()
+    e.ai_filler = FakeAI()
+    for i in range(5):
+        e.process(scene(80), i / 30)
+    assert e.ai_filler.requests == 0
+    e.toggle_vanish()
+    e.process(scene(80), 0.2)
+    assert e.ai_filler.requests == 1
+    assert e.status()["ai_fill"] == "idle"

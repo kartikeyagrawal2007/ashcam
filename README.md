@@ -37,10 +37,14 @@ In your call app, choose **OBS Virtual Camera** as the camera.
 | Record 15 s (panel) | Records the go away clip. Sit naturally and look at the screen. |
 
 Tips:
-- For a clean vanish, click **Capture room** in the panel once and step out of
-  view until it says the room is saved. Without it, the wall behind you is
-  filled with a smooth guess, which can blur posters or furniture. Capture
-  again if you move the camera or the lighting changes a lot.
+- For a perfect vanish, click **Capture room** in the panel once and step out
+  of view until it says the room is saved. Without it, AshCam fills the part
+  of the wall it never saw with [LaMa](https://github.com/advimman/lama), an
+  open-source AI inpainting model (Apache-2.0) that continues walls, shelves
+  and edges. It runs in the background (about 1.5 s on a MacBook) and takes
+  over from a quick blurry guess shortly after you snap. The model (~200 MB)
+  downloads on first run; `--no-ai-fill` turns it off. Capture again if you
+  move the camera or the lighting changes a lot.
 - If snaps don't register, raise **Sensitivity** and watch the meter cross the
   gold mark. If claps or typing set it off, turn on **Require a double snap**.
 - Snapping uses both the camera and the mic: the camera has to see your thumb

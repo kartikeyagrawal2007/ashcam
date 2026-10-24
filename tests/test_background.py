@@ -128,3 +128,45 @@ def test_exposure_wobble_never_drifts_to_black():
         filled = plate.filled()
         if i > 30:
             assert abs(filled[hidden].mean() - 200 * gain) < 25, i
+
+
+class PaintFiller:
+    """Fake AI filler: paints the hole one colour, synchronously."""
+    def __init__(self, value=77):
+        self.value = value
+
+    def fill(self, img, hole):
+        out = img.copy()
+        out[hole] = self.value
+        return out
+
+
+def ai_plate(value=77):
+    from ashcam.fill import BackgroundFiller
+    plate = learnt_plate(200)
+    plate.ai = BackgroundFiller(PaintFiller(value))
+    return plate
+
+
+def test_ai_fill_used_for_never_seen_area():
+    plate = ai_plate()
+    plate.request_ai_fill()
+    plate.ai.run_pending()
+    out = plate.filled()
+    assert (out[:, :20] == 77).all()             # never seen: AI fill
+    assert (out[:, -10:] == 200).all()           # seen: the real room
+
+
+def test_classic_fill_until_ai_is_ready():
+    plate = ai_plate()
+    plate.request_ai_fill()                      # not run yet
+    assert abs(plate.filled()[:, :20].mean() - 200) <= 10
+
+
+def test_ai_fill_follows_exposure():
+    plate = ai_plate(160)
+    plate.request_ai_fill()
+    plate.ai.run_pending()
+    for _ in range(2):
+        plate.update(np.full((H, W, 3), 100, np.uint8), left_half_mask())   # camera halves
+    assert abs(plate.filled()[:, :20].mean() - 80) <= 6
